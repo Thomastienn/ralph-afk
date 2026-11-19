@@ -10,12 +10,15 @@ cd -- "$root"
 mkdir -p .ralph-tui
 exec 9>.ralph-tui/afk.lock
 flock -n 9 || { echo 'ralph-afk is already running in this checkout.' >&2; exit 1; }
+# Each owner keeps their own agents table out of Git; RALPH_AGENTS points elsewhere (the tests use the example).
+agents="${RALPH_AGENTS:-$here/../agents}"
+[[ -f "$agents" ]] || { echo "Missing $agents: cp $(readlink -f -- "$here/../agents.example") $agents, then edit it." >&2; exit 1; }
 # --pr [N]: N workers open one PR per task and one reviewer merges them. The lock stays held.
 if [[ "${1-}" == --pr ]]; then shift; exec node "$here/ralph-pr.mjs" "$@"; fi
 
 usage='Usage: ralph-afk [-a agent,agent] [epic...] | ralph-afk --pr [workers]'
 # -a limits this run to agents from the agents table.
-mapfile -t known < <(awk -F'|' '!/^[[:space:]]*#/ && $1 == "ralph" && NF > 4 { print $2 }' "$here/../agents")
+mapfile -t known < <(awk -F'|' '!/^[[:space:]]*#/ && $1 == "ralph" && NF > 4 { print $2 }' "$agents")
 only=()
 while getopts a: opt; do
   [[ $opt == a ]] || { echo "$usage" >&2; exit 2; }
@@ -78,15 +81,21 @@ agents_now() {
 
 # Ask the real CLI with a cheap model. Ralph 0.12.0 does not recognise subscription
 # usage-limit errors, and matching its log would also match text the agent prints.
+# Claude and Codex probes say when a usage limit resets; resets[agent] keeps that (epoch seconds).
+# An agent that does not say gets an empty entry, so it is checked again after RALPH_AFK_WAIT.
+declare -A resets=()
 usable() {
-  local probe reply
-  probe="$(awk -F'|' -v agent="$1" '$1 == "ralph" && $2 == agent { sub(/^([^|]*[|]){4}/, ""); print; exit }' "$here/../agents")"
+  local probe reply err ok=1
+  probe="$(awk -F'|' -v agent="$1" '$1 == "ralph" && $2 == agent { sub(/^([^|]*[|]){4}/, ""); print; exit }' "$agents")"
   if [[ -z "$probe" ]]; then
-    echo "Unknown agent in RALPH_AFK_SCHEDULE: $1 (add it to $(readlink -f -- "$here/../agents"))" >&2
+    echo "Unknown agent in RALPH_AFK_SCHEDULE: $1 (add it to $(readlink -f -- "$agents"))" >&2
     return 1
   fi
-  reply="$(cd /tmp && timeout --kill-after=5 180 bash -c "$probe" 2>/dev/null)" || return 1
-  [[ "${reply,,}" == *pong* ]]
+  err="$(mktemp)"
+  reply="$(cd /tmp && timeout --kill-after=5 180 bash -c "$probe" 2>"$err")" && [[ "${reply,,}" == *pong* ]] && ok=0
+  (( ! ok )) || resets[$1]="$({ echo "$reply"; cat -- "$err"; } | node "$here/ralph-reset.mjs")" || :
+  rm -f -- "$err"
+  return "$ok"
 }
 
 count() { bd "$@" --parent "$epic" --json --limit 0 | jq length; }
@@ -166,8 +175,19 @@ while :; do
     log "$candidate is not usable now (usage limit, auth or network)."
   done
   if [[ -z "$agent" ]]; then
-    log "No agent available. Checking again in ${wait_s}s."
-    sleep "$wait_s" || :
+    # Wake at the first reset; an agent with no reset time keeps the fixed wait. Then probe every agent again.
+    read -r now min sec < <(date '+%s %M %S')
+    wake=''
+    for candidate in $candidates; do
+      at="${resets[$candidate]:-$((now + wait_s))}"
+      [[ -n "$wake" ]] && (( at >= wake )) || wake=$at
+    done
+    wake="${wake:-$((now + wait_s))}" # outside every window
+    # Several windows: wake by the next hour too, when another window may bring a usable agent.
+    next_hour=$((now - 10#$min * 60 - 10#$sec + 3600))
+    (( $(wc -w <<< "$schedule") < 2 || wake <= next_hour )) || wake=$next_hour
+    log "No agent available. Checking again in $((wake - now))s."
+    sleep "$((wake - now))" || :
     continue
   fi
   log "Starting one task of $epic on $agent."

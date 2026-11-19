@@ -114,7 +114,7 @@ function fixture(issues) {
   const read = name => existsSync(join(fix, name)) ? readFileSync(join(fix, name), 'utf8').trim().split('\n') : [];
   const script = fileURLToPath(new URL('../bin/ralph-afk', import.meta.url));
   const options = env => ({
-    cwd, env: { ...process.env, ...identity, FIX: fix, PATH: `${fix}/bin:${process.env.PATH}`, RALPH_PR_POLL: '0.05', RALPH_AFK_WAIT: '0', ...env },
+    cwd, env: { ...process.env, ...identity, FIX: fix, PATH: `${fix}/bin:${process.env.PATH}`, RALPH_PR_POLL: '0.05', RALPH_AFK_WAIT: '0', RALPH_AGENTS: fileURLToPath(new URL('../agents.example', import.meta.url)), ...env },
   });
   const run = (env = {}, args = []) => spawnSync('bash', [script, '--pr', ...args], { ...options(env), encoding: 'utf8', timeout: 30000 });
   const issue = id => JSON.parse(readFileSync(join(fix, 'issues.json'), 'utf8')).find(i => i.id === id);

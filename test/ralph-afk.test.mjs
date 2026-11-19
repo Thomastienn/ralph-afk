@@ -47,14 +47,14 @@ function fixture(work = { 'TreeTutor-7t3': 1 }) {
   // Limited until the first wait has passed, like a usage window that resets.
   const agent = name => bin(name, `echo '${name}' >> "${cwd}/probes"
 echo "$*" >> "${cwd}/probe-${name}-args"
-if [[ $(cat "${cwd}/limited-agent" 2>/dev/null) == '${name}' || ( " $FIXTURE_LIMITED " == *" ${name} "* && ! -e "${cwd}/sleeps" ) ]]; then echo "You've hit your usage limit" >&2; exit 1; fi; echo pong`);
+if [[ $(cat "${cwd}/limited-agent" 2>/dev/null) == '${name}' || ( " $FIXTURE_LIMITED " == *" ${name} "* && ! -e "${cwd}/sleeps" ) ]]; then cat "${cwd}/limit-${name}" 2>/dev/null || echo "You've hit your usage limit" >&2; exit 1; fi; echo pong`);
   agent('claude');
   agent('codex');
   bin('sleep', `echo "$1" >> "${cwd}/sleeps"; [[ -z $FIXTURE_WAIT_ENDS_WORK ]] || rm -f "${cwd}"/work-*`);
   bin('date', `if [[ $1 == +%H ]]; then echo "\${FIXTURE_HOUR:-12}"; else exec /usr/bin/date "$@"; fi`);
   const read = name => existsSync(join(cwd, name)) ? readFileSync(join(cwd, name), 'utf8').trim().split('\n') : [];
   const script = fileURLToPath(new URL('../bin/ralph-afk', import.meta.url));
-  const options = env => ({ cwd, env: { ...process.env, HOME: cwd, PATH: `${cwd}/bin:${process.env.PATH}`, BEADS_ACTOR: 'fixture', ...env } });
+  const options = env => ({ cwd, env: { ...process.env, HOME: cwd, PATH: `${cwd}/bin:${process.env.PATH}`, BEADS_ACTOR: 'fixture', RALPH_AGENTS: fileURLToPath(new URL('../agents.example', import.meta.url)), ...env } });
   const run = (env = {}, args = []) => spawnSync('bash', [script, ...args], { ...options(env), encoding: 'utf8', timeout: 20000 });
   const start = (env = {}) => spawn('bash', [script], options(env));
   return { run, start, read, bin, cwd, runs: () => read('runs'), sleeps: () => read('sleeps') };
@@ -77,6 +77,25 @@ test('with every agent limited it waits, then starts once usage is back', () => 
   assert.equal(f.sleeps()[0], '7');
   assert.equal(f.runs().length, 1);
   assert.match(f.runs()[0], /--agent claude/);
+});
+
+test('with every agent limited it sleeps until the first reset the probes report', () => {
+  const now = Math.floor(Date.now() / 1000);
+  const claude = JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resetsAt: now + 1000 } });
+  // A reset only Claude reports: Codex keeps the fixed wait.
+  const unknown = fixture();
+  writeFileSync(join(unknown.cwd, 'limit-claude'), claude);
+  assert.equal(unknown.run({ FIXTURE_LIMITED: 'claude codex' }).status, 0);
+  assert.deepEqual(unknown.sleeps(), ['600']);
+  // Both report one, later than the fixed wait: sleep until a minute after the first.
+  const known = fixture();
+  writeFileSync(join(known.cwd, 'limit-claude'), claude);
+  const codex = new Date((now + 2000) * 1000).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+  writeFileSync(join(known.cwd, 'limit-codex'), `You've hit your usage limit. Upgrade to Pro or try again at ${codex.replace(/(\d+),/, '$1th,')}.`);
+  const result = known.run({ FIXTURE_LIMITED: 'claude codex' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(Math.abs(Number(known.sleeps()[0]) - 1060) <= 5, known.sleeps()[0]);
+  assert.match(known.runs()[0], /--agent claude/);
 });
 
 test('the schedule picks the agent for the hour and runs nothing outside its windows', () => {

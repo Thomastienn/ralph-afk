@@ -23,7 +23,7 @@ function fixture(t) {
   // The scripts work on the Git checkout they are called from.
   execFileSync('git', ['init', '-q', cwd]);
   for (const dir of ['.ralph-tui', 'bin', '.config/ralph-tui/plugins/trackers']) mkdirSync(join(cwd, dir), { recursive: true });
-  const env = { ...process.env, HOME: cwd, PATH: `${cwd}/bin:${process.env.PATH}`, BEADS_ACTOR: 'fixture', RALPH_CODEX_MODEL: 'fixture-model' };
+  const env = { ...process.env, HOME: cwd, PATH: `${cwd}/bin:${process.env.PATH}`, BEADS_ACTOR: 'fixture', RALPH_CODEX_MODEL: 'fixture-model', RALPH_AGENTS: fileURLToPath(new URL('../agents.example', import.meta.url)) };
   writeFileSync(join(cwd, '.config/ralph-tui/plugins/trackers/beads-resume.js'), '');
   writeFileSync(join(cwd, 'issue.json'), JSON.stringify({ id: 'task-1', status: 'in_progress', assignee: 'fixture' }));
   writeFileSync(join(cwd, 'bin/bd'), `#!${process.execPath}

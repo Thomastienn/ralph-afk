@@ -36,7 +36,9 @@ done
 if [[ -n "$agent" ]] && ! "$model_given"; then
   var="RALPH_${agent^^}_MODEL"
   var="${var//-/_}"
-  model="${!var:-$(awk -F'|' -v agent="$agent" '$1 == "ralph" && $2 == agent { print $3; exit }' "$here/../agents")}"
+  agents="${RALPH_AGENTS:-$here/../agents}"
+  [[ -n "${!var:-}" || -f "$agents" ]] || { echo "Missing $agents: cp $(readlink -f -- "$here/../agents.example") $agents, then edit it." >&2; exit 1; }
+  model="${!var:-$(awk -F'|' -v agent="$agent" '$1 == "ralph" && $2 == agent { print $3; exit }' "$agents")}"
   [[ -z "$model" ]] || args+=(--model "$model")
 fi
 if "$takeover" && [[ " ${args[*]} " != *" --help "* && " ${args[*]} " != *" -h "* ]]; then

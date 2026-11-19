@@ -1,0 +1,22 @@
+# Agents the Ralph runners may use. Copy this file to `agents` (ignored by Git) and edit the copy.
+#
+# Format, one agent per line: stage|agent|model|effort|probe
+#   stage   ralph for `ralph` and `ralph-afk`; worker or reviewer for `ralph-afk --pr`.
+#   agent   A Ralph agent plugin, as listed by `ralph-tui plugins agents`. --pr supports claude and codex only.
+#   model   Work model, passed as --model. RALPH_<AGENT>_MODEL overrides it for the ralph stage.
+#   effort  Reasoning effort for --pr agents; - keeps the CLI default. The ralph stage ignores it.
+#   probe   Cheap request run in /tmp. The agent is usable when the reply contains "pong".
+#           Claude (with stream-json) and Codex probes also report when a usage limit resets.
+#
+# In --pr mode, line order within a stage is the fallback order.
+# RALPH_AFK_SCHEDULE decides which agents may run in each hour.
+# The commented-out lines are optional agents whose probes alone have been checked;
+# choose a work model before enabling one.
+
+ralph|claude|opus|-|claude -p 'Reply with exactly: pong' --model haiku --effort low --output-format stream-json --verbose
+ralph|codex|gpt-6.2-sol|-|codex exec --skip-git-repo-check --ephemeral -s read-only -m gpt-6-luna -c 'model_reasoning_effort="low"' 'Reply with exactly: pong'
+worker|claude|sonnet|high|claude -p 'Reply with exactly: pong' --model haiku --effort low --output-format stream-json --verbose
+worker|codex|gpt-6.2-sol|medium|codex exec --skip-git-repo-check --ephemeral -s read-only -m gpt-6-luna -c 'model_reasoning_effort="low"' 'Reply with exactly: pong'
+reviewer|claude|opus|high|claude -p 'Reply with exactly: pong' --model haiku --effort low --output-format stream-json --verbose
+#ralph|cursor|auto|-|agent -p --trust --mode ask --model auto 'Reply with exactly: pong'
+#ralph|github-copilot|MODEL|-|copilot -s --no-custom-instructions --disable-builtin-mcps -p 'Reply with exactly: pong'
