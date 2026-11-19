@@ -150,6 +150,30 @@ test('--pr refuses to start without the worker prompt', () => {
   assert.deepEqual(f.claims(), []);
 });
 
+test('--pr refuses to start with uncommitted changes and pushes nothing', () => {
+  const f = fixture([epic('E1'), task('E1.1', 'E1')]);
+  writeFileSync(join(f.cwd, 'README'), 'edited\n');
+  writeFileSync(join(f.cwd, 'spec.md'), 'new\n');
+  const result = f.run();
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Uncommitted changes; commit or stash them first:[\s\S]*README[\s\S]*spec\.md/);
+  assert.deepEqual(f.claims(), []);
+  assert.equal(execFileSync('git', ['log', '--oneline', 'origin/master'], { cwd: f.cwd, encoding: 'utf8' }).trim().split('\n').length, 1);
+});
+
+test('--pr commits a changed Beads export before the push', () => {
+  const f = fixture([epic('E1'), task('E1.1', 'E1')]);
+  const git = (...args) => execFileSync('git', args, { cwd: f.cwd, encoding: 'utf8', env: { ...process.env, ...identity } }).trim();
+  mkdirSync(join(f.cwd, '.beads'));
+  writeFileSync(join(f.cwd, '.beads/issues.jsonl'), '{}\n');
+  git('add', '.beads/issues.jsonl');
+  git('commit', '-qm', 'beads');
+  writeFileSync(join(f.cwd, '.beads/issues.jsonl'), '{"planned":true}\n');
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(git('log', '--format=%s', 'origin/master'), /chore\(beads\): export before ralph-afk --pr/);
+});
+
 test('a new-ui ticket without a Mockup line is skipped with a reminder; one with a mockup runs', () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1', { labels: ['new-ui'], description: 'A new panel.' }),
     task('E1.2', 'E1', { labels: ['new-ui'], description: 'A new panel.\nMockup: docs/mockups/E1.2.html' })]);

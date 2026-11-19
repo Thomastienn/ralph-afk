@@ -286,7 +286,9 @@ The project needs two prompts that describe how its workers and reviewer work:
 `.ralph-tui/pr-worker.md` and `.ralph-tui/pr-reviewer.md`.
 
 - At start, your local default branch is pushed to `origin`, so that workers
-  branch from your latest planning commits.
+  branch from your latest planning commits. A changed `.beads/issues.jsonl` is
+  committed first. Any other uncommitted change outside `.ralph-tui/` stops the
+  run: commit or stash it first.
 - Worktrees live outside the checkout, in `../<repo>-pr/`. Agent logs go to
   `.ralph-tui/pr-logs/`.
 - Workers take tasks with no parent first, then tasks in epic age order. Tasks

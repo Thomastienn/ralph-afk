@@ -116,6 +116,15 @@ const base = json('gh', ['repo', 'view', '--json', 'defaultBranchRef']).defaultB
 const reviewTree = join(trees, 'reviewer');
 mkdirSync(logs, { recursive: true });
 mkdirSync(trees, { recursive: true });
+// Workers never commit the Beads export, so the supervisor does, on the default branch only.
+function commitBeads(message) {
+  if (run('git', ['rev-parse', '--abbrev-ref', 'HEAD']) !== base || !run('git', ['status', '--porcelain', '--', '.beads/issues.jsonl'])) return;
+  if (attempt('git', ['commit', '-q', '-m', message, '--', '.beads/issues.jsonl']) !== null) log('Committed the Beads export.');
+}
+// Workers branch from origin, so uncommitted planning work would miss them. Never commit it blindly: it gets pushed.
+commitBeads('chore(beads): export before ralph-afk --pr');
+const dirty = run('git', ['status', '--porcelain', '--', '.', ':!.ralph-tui', ':!.beads/issues.jsonl']);
+if (dirty) fail(`Uncommitted changes; commit or stash them first:\n${dirty}`);
 // The owner's planning commits must reach GitHub before workers branch from it.
 try { run('git', ['push', '-q', 'origin', base], { stdio: ['ignore', 'pipe', 'inherit'] }); }
 catch { fail(`Could not push local ${base} to origin; fix that first (diverged, or the pre-push secret scan refused).`); }
@@ -295,10 +304,8 @@ for (;;) {
 
 if (stopping) log('Stop requested. Stopping.');
 else log('No ready tasks and no open PRs left. Stopping.');
-// Workers never commit the Beads export; commit it once here so the next start pushes it with the planning commits.
-if (run('git', ['rev-parse', '--abbrev-ref', 'HEAD']) === base && run('git', ['status', '--porcelain', '--', '.beads/issues.jsonl'])) {
-  if (attempt('git', ['commit', '-q', '-m', 'chore(beads): export after ralph-afk --pr', '--', '.beads/issues.jsonl']) !== null) log('Committed the Beads export.');
-}
+// Commit the export once here so the next start pushes it with the planning commits.
+commitBeads('chore(beads): export after ralph-afk --pr');
 const parked = json('bd', ['list', '--label', 'needs-human', '--status', 'open,in_progress,blocked', '--json', '--limit', '0']) ?? [];
 if (parked.length) {
   console.log('Waiting for a human:');
