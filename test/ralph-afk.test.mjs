@@ -119,6 +119,16 @@ test('an agent missing from the table never launches', () => {
   assert.deepEqual(unknown.runs(), []);
 });
 
+test('an agents table in the old stage format is refused at start', () => {
+  const f = fixture();
+  const old = join(f.cwd, 'old-agents');
+  writeFileSync(old, "ralph|claude|opus|-|echo pong\n");
+  const result = f.run({ RALPH_AGENTS: old });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /old stage\|agent\|model\|effort\|probe format/);
+  assert.deepEqual(f.runs(), []);
+});
+
 test('-a limits the run to those agents; typos and unscheduled agents are refused at start', () => {
   const f = fixture({ 'TreeTutor-sh8': 1 });
   const result = f.run({}, ['-a', 'codex', 'TreeTutor-sh8']);

@@ -72,18 +72,18 @@ usage, they switch to another and wait for usage limits to reset.
 
 ## Agents file
 
-Each line enables one agent for one stage:
+Each line enables one agent. `ralph`, `ralph-afk` and `ralph-afk --pr`
+(workers and reviewer) all read the same lines:
 
 ```text
-stage|agent|model|effort|probe
+agent|model|effort|probe
 ```
 
 | Field | Meaning |
 | --- | --- |
-| `stage` | `ralph` for `ralph` and `ralph-afk`; `worker` or `reviewer` for `ralph-afk --pr`. |
-| `agent` | A Ralph agent plugin, as listed by `ralph-tui plugins agents`. `--pr` supports `claude` and `codex` only. |
-| `model` | The work model, passed as `--model`. `RALPH_<AGENT>_MODEL` overrides it for the `ralph` stage, for example `RALPH_CODEX_MODEL`. |
-| `effort` | Reasoning effort for `--pr` agents. `-` keeps the CLI default. The `ralph` stage ignores it. |
+| `agent` | A Ralph agent plugin, as listed by `ralph-tui plugins agents`. `--pr` uses only the `claude` and `codex` lines. |
+| `model` | The work model, passed as `--model`. `RALPH_<AGENT>_MODEL` overrides it for `ralph` and `ralph-afk`, for example `RALPH_CODEX_MODEL`. |
+| `effort` | Reasoning effort for `--pr` agents. `-` keeps the CLI default. `ralph` and `ralph-afk` ignore it. |
 | `probe` | A cheap request, run in `/tmp`. The agent counts as usable when the reply contains `pong`. |
 
 Probes use a cheap model, so they cost almost nothing. A probe cannot detect a
@@ -213,6 +213,7 @@ and squash-merges PRs whose checks have finished.
 ```bash
 ralph-afk --pr      # 3 workers
 ralph-afk --pr 5    # 5 workers
+ralph-afk -a codex --pr  # only Codex, for workers and reviewer
 ```
 
 The project needs two prompts that describe how its workers and reviewer work:
@@ -233,7 +234,7 @@ The project needs two prompts that describe how its workers and reviewer work:
 - A task or PR whose agent fails 3 times is labelled `needs-human`. Other work
   continues, and the run lists these items when it ends.
 - A limited agent is not probed again before its reported reset. Meanwhile,
-  the next line of the same stage takes over.
+  the next usable line in the agents file takes over.
 - Ctrl+C works as in sequential mode: once to let running agents finish, twice
   to stop them.
 
@@ -244,7 +245,7 @@ The project needs two prompts that describe how its workers and reviewer work:
 | `RALPH_AGENTS` | `agents` next to `bin/` | Path to the agents file. |
 | `RALPH_AFK_SCHEDULE` | `00-24=claude,codex` | Which agents may run in each hour. |
 | `RALPH_AFK_WAIT` | `600` | Seconds before an agent with no known reset time is probed again. |
-| `RALPH_<AGENT>_MODEL` | from `agents` | Work model override for the `ralph` stage. |
+| `RALPH_<AGENT>_MODEL` | from `agents` | Work model override for `ralph` and `ralph-afk`. |
 | `RALPH_PR_WORKERS` | `3` | Worker count for `--pr` when none is given. |
 | `RALPH_PR_POLL` | `120` | Seconds between `--pr` checks of tasks and PRs. |
 

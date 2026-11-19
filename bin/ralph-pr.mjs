@@ -11,7 +11,9 @@ import { retryAt } from './ralph-reset.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
 const root = process.cwd();
 const { env } = process;
-const slots = Number(process.argv[2] ?? env.RALPH_PR_WORKERS ?? 3);
+// ralph-afk passes -a (space-separated, maybe empty) then the optional worker count.
+const only = (process.argv[2] ?? '').split(' ').filter(Boolean);
+const slots = Number(process.argv[3] ?? env.RALPH_PR_WORKERS ?? 3);
 const schedule = env.RALPH_AFK_SCHEDULE ?? '00-24=claude,codex';
 const waitMs = Number(env.RALPH_AFK_WAIT ?? 600) * 1000;
 const pollMs = Number(env.RALPH_PR_POLL ?? 120) * 1000;
@@ -33,18 +35,16 @@ const fail = message => { console.error(message); process.exit(1); };
 const labelled = (issue, ...names) => (issue.labels ?? []).some(label => names.includes(label));
 const show = id => { const out = attempt('bd', ['show', id, '--json']); return out && JSON.parse(out)[0]; };
 
-if (!Number.isInteger(slots) || slots < 1) fail('Usage: ralph-afk --pr [workers]; workers is a whole number from 1.');
+if (!Number.isInteger(slots) || slots < 1) fail('Usage: ralph-afk [-a agent,agent] --pr [workers]; workers is a whole number from 1.');
 for (const [stage, file] of Object.entries(prompts)) {
   if (!existsSync(file)) fail(`Missing ${file}: the ${stage} prompt for ralph-afk --pr.`);
 }
+// The same lines as ralph-afk; workers and the reviewer both take the first usable one.
 const table = readFileSync(agentsFile, 'utf8').split('\n')
   .filter(line => line.trim() && !line.trimStart().startsWith('#'))
-  .map(line => { const [stage, agent, model, effort, ...probe] = line.split('|'); return { stage, agent, model, effort, probe: probe.join('|') }; });
-for (const stage of Object.keys(prompts)) {
-  const rows = table.filter(row => row.stage === stage);
-  if (!rows.length) fail(`No ${stage} line in ${agentsFile}.`);
-  for (const row of rows) if (!['claude', 'codex'].includes(row.agent)) fail(`ralph-afk --pr runs claude and codex only, not ${row.agent}.`);
-}
+  .map(line => { const [agent, model, effort, ...probe] = line.split('|'); return { agent, model, effort, probe: probe.join('|') }; })
+  .filter(row => ['claude', 'codex'].includes(row.agent) && (!only.length || only.includes(row.agent)));
+if (!table.length) fail(`No claude or codex line in ${agentsFile}${only.length ? ` for -a ${only.join(',')}` : ''}; ralph-afk --pr runs those only.`);
 
 // Same windows as ralph-afk: space-separated FROM-TO=agents in local hours.
 function scheduled() {
@@ -67,8 +67,8 @@ function usable(row) {
   if (!ok) log(`${row.agent} is not usable now (usage limit, auth or network).`);
   return ok;
 }
-// The first usable agent of the stage in table order. The reviewer has one line, so it only waits.
-const pick = stage => table.find(row => row.stage === stage && scheduled().includes(row.agent) && usable(row));
+// The first usable agent in table order.
+const pick = () => table.find(row => scheduled().includes(row.agent) && usable(row));
 const down = agent => probed.set(agent, { ok: false, until: Date.now() + waitMs });
 
 const commonGit = run('git', ['rev-parse', '--path-format=absolute', '--git-common-dir']);
@@ -271,7 +271,7 @@ for (;;) {
   const workers = [...running].filter(job => job.stage === 'worker');
   const ready = stopping ? [] : readyTasks().filter(task => !workers.some(job => job.Task === task.id));
   for (const task of ready.slice(0, slots - workers.length)) {
-    const row = pick('worker');
+    const row = pick();
     if (!row) { log('No worker agent available now.'); break; }
     startWorker(task, row);
   }
@@ -279,9 +279,9 @@ for (;;) {
   const reviewing = [...running].some(job => job.stage === 'reviewer');
   const next = prs.find(pr => labelled(pr.task, 'in-review') && settled(pr));
   if (!stopping && !reviewing && next) {
-    const row = pick('reviewer');
+    const row = pick();
     if (row) startReview(next, row);
-    else log('The reviewer agent is not available now; waiting.');
+    else log('No reviewer agent available now; waiting.');
   }
   if (!running.size && (stopping || (!ready.length && !prs.length && !slow))) break;
   await Promise.race([sleep(pollMs), ...[...running].map(job => job.done)]);

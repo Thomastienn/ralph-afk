@@ -135,9 +135,8 @@ test('workers open one PR per task, oldest epic first; one reviewer at a time me
   assert.equal(execFileSync('git', ['branch', '--all', '--list', '*E*'], { cwd: f.cwd, encoding: 'utf8' }), '');
   assert.equal(execFileSync('git', ['ls-remote', '--heads', 'origin'], { cwd: f.cwd, encoding: 'utf8' }).match(/refs\/heads\/E/g), null);
   const agents = f.read('agents');
-  assert.ok(agents.filter(line => / E\d\.\d -p --permission-mode auto --model sonnet --effort high$/.test(line)).length === 3, agents.join('\n'));
-  // The fake reviewer reads the task line too, so match the reviewer's model instead.
-  assert.equal(agents.filter(line => line.endsWith('-p --permission-mode auto --model opus --effort high')).length, 3, agents.join('\n'));
+  // Workers and the reviewer share the first agents line.
+  assert.equal(agents.filter(line => / E\d\.\d -p --permission-mode auto --model opus --effort high$/.test(line)).length, 6, agents.join('\n'));
   assert.match(result.stdout, /No ready tasks and no open PRs left/);
 });
 
@@ -161,7 +160,7 @@ test('a new-ui ticket without a Mockup line is skipped with a reminder; one with
   assert.equal(f.issue('E1.2').status, 'closed');
 });
 
-test('with Claude out of usage a Codex worker takes the task; the reviewer waits for Claude', () => {
+test('with Claude out of usage a Codex worker takes the task; Claude reviews once it is back', () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1')]);
   const result = f.run({ FIXTURE_LIMITED: 'claude' });
   assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -169,6 +168,15 @@ test('with Claude out of usage a Codex worker takes the task; the reviewer waits
   assert.match(worker, /^codex E1\.1 exec --approve-for-me -m gpt-6\.2-sol -c model_reasoning_effort="medium" -c sandbox_workspace_write\.writable_roots=\[.*\] -c sandbox_workspace_write\.network_access=true$/);
   assert.match(reviewer, /^claude E1\.1 -p --permission-mode auto --model opus/);
   assert.deepEqual(rest, []);
+});
+
+test('-a limits workers and the reviewer to those agents', () => {
+  const f = fixture([epic('E1'), task('E1.1', 'E1')]);
+  const result = f.run({}, ['-a', 'codex']);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const agents = f.read('agents');
+  assert.equal(agents.length, 2, agents.join('\n'));
+  assert.ok(agents.every(line => line.startsWith('codex E1.1 exec')), agents.join('\n'));
 });
 
 test('a task whose worker keeps failing gets needs-human after 3 tries while other work merges', () => {
