@@ -21,7 +21,7 @@ const SLOW_EVERY = 5; // merges between slow-suite runs on GitHub
 const TRIES = 3; // failed agent runs on one task or PR before it needs a human
 const trees = join(dirname(root), `${basename(root)}-pr`); // outside the checkout, so nothing lands in .gitignore
 const logs = join(root, '.ralph-tui/pr-logs');
-const agentsFile = env.RALPH_AGENTS ?? join(here, '../agents'); // ralph-afk checked it exists
+const agentsFile = env.RALPH_AGENTS || (existsSync('.ralph-tui/agents') ? '.ralph-tui/agents' : join(here, '../agents')); // ralph-afk checked it exists
 const prompts = { worker: '.ralph-tui/pr-worker.md', reviewer: '.ralph-tui/pr-reviewer.md' };
 
 const log = message => console.log(`[ralph-pr ${new Date().toLocaleString('sv')}] ${message}`);

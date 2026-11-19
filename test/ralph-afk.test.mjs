@@ -119,6 +119,14 @@ test('an agent missing from the table never launches', () => {
   assert.deepEqual(unknown.runs(), []);
 });
 
+test("a checkout's own .ralph-tui/agents overrides the shared agents file", () => {
+  const f = fixture({ 'TreeTutor-7t3': 1 });
+  writeFileSync(join(f.cwd, '.ralph-tui/agents'), 'worker|codex|repo-model|-\n');
+  const result = f.run({ RALPH_AGENTS: '', RALPH_AFK_SCHEDULE: '00-24=codex' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(f.runs(), ['run --headless --epic TreeTutor-7t3 --iterations 1 --agent codex --model repo-model']);
+});
+
 test('an agents line with another stage, agent or field count is refused at start', () => {
   const f = fixture();
   const old = join(f.cwd, 'old-agents');

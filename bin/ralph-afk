@@ -11,7 +11,9 @@ mkdir -p .ralph-tui
 exec 9>.ralph-tui/afk.lock
 flock -n 9 || { echo 'ralph-afk is already running in this checkout.' >&2; exit 1; }
 # Each owner keeps their own agents table out of Git; RALPH_AGENTS points elsewhere (the tests use the example).
-agents="${RALPH_AGENTS:-$here/../agents}"
+# A checkout's own .ralph-tui/agents beats the shared one.
+[[ -f .ralph-tui/agents ]] && agents=.ralph-tui/agents || agents="$here/../agents"
+agents="${RALPH_AGENTS:-$agents}"
 [[ -f "$agents" ]] || { echo "Missing $agents: cp $(readlink -f -- "$here/../agents.example") $agents, then edit it." >&2; exit 1; }
 # Every line is worker or reviewer, for claude or codex: the agents with a built-in probe.
 # This also catches the retired ralph stage and the old probe column.

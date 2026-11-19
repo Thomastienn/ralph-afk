@@ -97,6 +97,10 @@ Set up your machine once, then each project you want Ralph to work on.
    the repository. To keep the file somewhere else, set `RALPH_AGENTS` to its
    path.
 
+   To use other agents or models in one project, put an agents file at
+   `.ralph-tui/agents` in that project. It replaces the shared file for runs
+   in that checkout. `RALPH_AGENTS` still wins over both.
+
 ### Project
 
 Run these in the project's checkout:
@@ -304,7 +308,7 @@ The project needs two prompts that describe how its workers and reviewer work:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `RALPH_AGENTS` | `agents` next to `bin/` | Path to the agents file. |
+| `RALPH_AGENTS` | `.ralph-tui/agents` in the checkout if present, else `agents` next to `bin/` | Path to the agents file. |
 | `RALPH_AFK_SCHEDULE` | `00-24=claude,codex` | Which agents may run in each hour. |
 | `RALPH_AFK_WAIT` | `600` | Seconds before an agent with no known reset time is probed again. |
 | `RALPH_<AGENT>_MODEL` | from `agents` | Work model override for `ralph` and `ralph-afk`. |
