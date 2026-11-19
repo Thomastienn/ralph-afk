@@ -11,6 +11,48 @@ usage, they switch to another and wait for usage limits to reset.
 - `ralph-afk --pr` runs several workers in parallel. Each task becomes its own
   pull request, and a reviewer agent merges the PRs once CI passes.
 
+You plan with an agent while you are at the keyboard. The runners do the
+building while you are away.
+
+## The workflow
+
+Each feature goes through the same loop. The planning steps use
+[Matt Pocock's skills](https://github.com/mattpocock/skills) in Claude Code.
+They write only docs and tickets, never code.
+
+1. **Grill.** Run `/grill-with-docs` and describe the feature. The agent
+   asks numbered questions; answer them in one message (`q1 yes q2 ...`). As
+   decisions settle, it writes them to `GLOSSARY.md` and `docs/adr/`. For work
+   too big for one session, use `/wayfinder` instead. It maps the open
+   decisions as tickets and resolves them one at a time.
+2. **Spec.** Run `/to-spec`. It turns the conversation into
+   `docs/<feature>-spec.md`.
+3. **Mock up new UI.** For a new screen, panel or component, have an agent make
+   a rough mockup at `docs/mockups/<issue-id>.html` or `.png`. Label the ticket
+   `new-ui` and add a `Mockup:` line to its description. Tweaks that keep the
+   existing look need no mockup.
+4. **Ticket.** Run `/to-tickets`. It publishes one Beads epic per feature, with
+   a child task for each step and dependencies for the order. Size each task
+   for one Ralph run: one session, up to about 200k tokens of context. Merge
+   tasks that are too small; split tasks that are too big.
+5. **Walk away.** Start `ralph-afk` in tmux, or `ralph-afk --pr` to work
+   several tasks in parallel. It takes the oldest ready epic, works it one task
+   at a time, and switches agents when one runs out of usage.
+6. **Check back.** When the backlog runs dry, `ralph-afk` adds a full-suite
+   gate epic. That run fixes any failing tests and reviews the recent
+   commits. Then `ralph-afk` stops. Look at what needs you:
+
+   ```bash
+   bd list --status blocked          # tasks with an external blocker, noted in the task
+   bd list --label needs-human       # --pr mode: tasks or PRs that failed 3 times
+   cat .ralph-tui/progress.md        # what each task did
+   ```
+
+   Answer the notes, unblock the tasks, and run `ralph-afk` again.
+
+Plan the next feature while `ralph-afk` works on the last one. New epics join
+the queue on the next cycle, behind the epics that are older.
+
 ## Requirements
 
 - Git, Node.js, `jq`, and GNU coreutils and util-linux (`timeout`, `flock`)
@@ -21,6 +63,10 @@ usage, they switch to another and wait for usage limits to reset.
 - For `--pr` mode: `gh`, authenticated, and a GitHub remote with CI
 
 ## Setup
+
+Set up your machine once, then each project you want Ralph to work on.
+
+### Machine
 
 1. Put the runners on your `PATH`:
 
@@ -51,7 +97,25 @@ usage, they switch to another and wait for usage limits to reset.
    the repository. To keep the file somewhere else, set `RALPH_AGENTS` to its
    path.
 
-4. Run one task:
+### Project
+
+Run these in the project's checkout:
+
+1. Set up Beads: `bd init`.
+2. Optional: run `ralph-tui init` to give the project its own
+   `.ralph-tui/config.toml`, for example to set its default agent.
+3. In Claude Code, run `/setup-matt-pocock-skills` and choose Beads as the
+   issue tracker. It writes `docs/agents/issue-tracker.md` and
+   `docs/agents/domain.md`, which the planning skills read. Add your ticket
+   rules to `issue-tracker.md`: one epic per feature, tasks sized for one
+   Ralph run, and no full-suite gate tickets, because `ralph-afk` makes those.
+4. In `AGENTS.md`, authorize Ralph runs to implement, verify, close tasks and
+   commit without asking. Without it, agents stop to ask for approval and
+   nobody is there to give it.
+5. For `--pr` mode only: write `.ralph-tui/pr-worker.md` and
+   `.ralph-tui/pr-reviewer.md`, and set up CI on GitHub. See
+   [ralph-afk --pr](#ralph-afk---pr).
+6. Run one task to check the setup:
 
    ```bash
    ralph --agent codex --iterations 1
