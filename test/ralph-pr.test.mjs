@@ -51,7 +51,7 @@ const prs = read('prs.json', []);
 switch (args.slice(0, 2).join(' ')) {
   case 'repo view': out({ defaultBranchRef: { name: 'master' } }); break;
   case 'pr create':
-    prs.push({ number: prs.length + 1, headRefName: flag('--head'), title: flag('--title'), state: 'OPEN', statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }] });
+    prs.push({ number: prs.length + 1, headRefName: flag('--head'), title: flag('--title'), state: 'OPEN', statusCheckRollup: [{ status: 'COMPLETED', conclusion: (process.env.FIXTURE_RED || '').split(' ').includes(flag('--head')) ? 'FAILURE' : 'SUCCESS' }] });
     write('prs.json', prs); break;
   case 'pr list': out(prs.filter(pr => pr.state === 'OPEN')); break;
   case 'pr view': out({ state: prs[args[2] - 1].state }); break;
@@ -226,6 +226,18 @@ test('a task whose worker keeps failing gets needs-human after 3 tries while oth
   assert.ok(f.issue('E1.1').labels.includes('needs-human'));
   assert.equal(f.issue('E1.2').status, 'closed');
   assert.match(result.stdout, /Waiting for a human:\n {2}E1\.1 Do E1\.1/);
+});
+
+test('the reviewer takes only PRs whose CI passed; a red PR in review gets needs-human', () => {
+  const f = fixture([epic('E1'), task('E1.1', 'E1'), task('E1.2', 'E1')]);
+  const result = f.run({ FIXTURE_RED: 'E1.1' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.read('merges').length, 1);
+  assert.equal(f.issue('E1.2').status, 'closed');
+  assert.ok(f.issue('E1.1').labels.includes('needs-human'));
+  assert.notEqual(f.issue('E1.1').status, 'closed');
+  assert.deepEqual(f.read('agents').filter(line => /^claude E1\.1 .*--model opus/.test(line)), []);
+  assert.match(result.stdout, /is in review but its CI failed; labelled needs-human/);
 });
 
 test('every 5 merges the slow suite runs on GitHub; a failure files a fix task that a worker takes', () => {

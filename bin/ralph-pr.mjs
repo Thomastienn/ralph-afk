@@ -233,6 +233,8 @@ function taskPrs() {
 }
 const settled = pr => pr.statusCheckRollup?.length &&
   pr.statusCheckRollup.every(check => (check.status ?? 'COMPLETED') === 'COMPLETED' && !['PENDING', 'EXPECTED'].includes(check.state));
+// Check runs report a conclusion, commit statuses a state.
+const passed = pr => pr.statusCheckRollup.every(check => ['SUCCESS', 'NEUTRAL', 'SKIPPED'].includes(check.conclusion ?? check.state));
 function startReview(pr, row) {
   // Each review starts from a clean, current base; the reviewer checks the PR out detached.
   run('git', ['fetch', '-q', 'origin']);
@@ -325,7 +327,13 @@ for (;;) {
   }
   const prs = taskPrs().filter(pr => !labelled(pr.task, 'needs-human'));
   const reviewing = [...running].some(job => job.stage === 'reviewer');
-  const next = prs.find(pr => labelled(pr.task, 'in-review') && settled(pr));
+  // A worker labels a PR in-review only on green CI; one that is red anyway waits for the owner.
+  for (const pr of prs.filter(pr => labelled(pr.task, 'in-review') && settled(pr) && !passed(pr))) {
+    attempt('bd', ['update', pr.task.id, '--add-label', 'needs-human']);
+    attempt('bd', ['note', pr.task.id, `ralph-afk --pr: PR #${pr.number} is in review but its CI failed.`]);
+    log(`PR #${pr.number} is in review but its CI failed; labelled needs-human. Remove in-review too to hand it back to a worker.`);
+  }
+  const next = prs.find(pr => labelled(pr.task, 'in-review') && settled(pr) && passed(pr));
   if (!stopping && !reviewing && next) {
     const row = pick('reviewer');
     if (row) startReview(next, row);

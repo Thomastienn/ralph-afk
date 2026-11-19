@@ -195,7 +195,7 @@ ralph-afk -a codex --pr  # only Codex; needs a codex reviewer line
 
 Each worker takes a ready task into its own worktree and branch, opens a PR
 and waits for CI. One reviewer at a time reviews, fixes and squash-merges PRs
-whose checks have finished. Needs `.ralph-tui/pr-worker.md` and
+whose checks all passed. Needs `.ralph-tui/pr-worker.md` and
 `.ralph-tui/pr-reviewer.md`.
 
 - At start, the local default branch is pushed to `origin` so workers branch
@@ -215,6 +215,8 @@ whose checks have finished. Needs `.ralph-tui/pr-worker.md` and
   main checkout fast-forwards if it is on the default branch with no local
   changes.
 - Every 5 merges, `slow-tests.yml` is dispatched. A failure files a fix task.
+- A PR labelled `in-review` whose CI failed gets `needs-human`, not a
+  reviewer. To hand it back to a worker, remove both labels.
 - A task or PR whose agent fails 3 times gets `needs-human`. Other work
   continues, and these items are listed at the end.
 - A limited agent is not probed again before its reported reset. The next
