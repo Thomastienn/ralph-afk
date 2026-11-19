@@ -1,19 +1,19 @@
 # Ralph runners
 
 `ralph` and `ralph-afk` work in any Git checkout that has Ralph and Beads set
-up. Run them from anywhere inside the checkout. They live in `ralph-tui/bin/`
-and are linked into `~/.local/bin` by setup (extras only).
+up. Run them from anywhere inside the checkout. They live in `bin/`
+and are linked into `~/.local/bin` by thomas_config setup (extras only).
 
 Ralph works on the project's Beads epics one after another, oldest first.
 `ralph-afk` makes each open epic that has no dependency wait for the open epic
 created just before it (`bd dep add`), so agents planning epics need no rule.
 To reorder, change the dependencies yourself; an epic that already has one is
 left alone. A blocked epic's children are not ready either. The project's `.ralph-tui/config.toml` is optional; global
-defaults are in `ralph-tui/config.toml`.
+defaults are in `~/.config/ralph-tui/config.toml`.
 
 ## Agents
 
-`ralph-tui/agents` lists every agent the runners can use, one per line:
+`agents` lists every agent the runners can use, one per line:
 
 ```text
 name|work model|probe
@@ -64,7 +64,7 @@ ralph-afk -a claude,codex my-epic      # only Claude and Codex, only this epic
 ```
 
 `-a` limits that run to a comma-separated list of agents from
-`ralph-tui/agents`; put it before the epics. The schedule still applies: chosen
+`agents`; put it before the epics. The schedule still applies: chosen
 agents run only in windows that list them, in schedule order. An unknown agent,
 or one that is in no window, is refused at start.
 
@@ -115,7 +115,7 @@ running task is not interrupted at a window boundary.
 ## Checks
 
 ```bash
-node --test ralph-tui/test/*.test.mjs
+node --test test/*.test.mjs
 ```
 
 The tests use fake CLIs in a temporary checkout. They make no model calls.
