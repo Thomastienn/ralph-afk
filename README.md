@@ -203,6 +203,11 @@ whose checks have finished. Needs `.ralph-tui/pr-worker.md` and
   committed first. Any other uncommitted change outside `.ralph-tui/` stops the
   run.
 - Worktrees: `../<repo>-pr/`. Agent logs: `.ralph-tui/pr-logs/`.
+- Every agent's steps print as they happen, one line each, prefixed with its
+  task or `review-<PR>`; failed tool calls show as `error:`. `claude -p` writes
+  its log only at exit, so Claude steps come from its live session transcript
+  in `~/.claude/projects/` (or `$CLAUDE_CONFIG_DIR/projects/`). Codex output is
+  printed as Codex writes it to the log.
 - Task order: parentless tasks first, then by epic age. Skips tasks labelled
   `gate:backlog`, `in-review` or `needs-human`. A `new-ui` task waits for a
   `Mockup:` line in its description.

@@ -2,7 +2,8 @@
 // branch, opens a PR and waits for CI; one reviewer at a time reviews, fixes and squash-merges green PRs.
 // ralph-afk holds the checkout lock and starts this from the repository root. See docs/ralph.md.
 import { execFileSync, spawn } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, symlinkSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, statSync, symlinkSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -91,7 +92,7 @@ function launch(row, stage, name, cwd, facts) {
   // detached: Ctrl+C in this terminal reaches only the supervisor, never a running agent.
   const child = spawn(bin, args, { cwd, stdio: ['ignore', out, out], detached: true });
   closeSync(out);
-  const job = { stage, name, agent: row.agent, started: Date.now(), child, ...Object.fromEntries(facts.map(fact => [fact.slice(0, fact.indexOf(': ')), fact.slice(fact.indexOf(': ') + 2)])) };
+  const job = { stage, name, agent: row.agent, cwd, offset: 0, started: Date.now(), child, ...Object.fromEntries(facts.map(fact => [fact.slice(0, fact.indexOf(': ')), fact.slice(fact.indexOf(': ') + 2)])) };
   job.done = new Promise(resolve => {
     child.on('exit', code => resolve((job.code = code ?? 1)));
     child.on('error', error => { log(`Could not start ${bin}: ${error.message}`); resolve((job.code = 127)); });
@@ -100,6 +101,43 @@ function launch(row, stage, name, cwd, facts) {
   log(`Started ${row.agent} ${row.model} as ${stage} for ${name}; log: .ralph-tui/pr-logs/${name}.log`);
   return job;
 }
+
+// Each agent's steps stream here as they happen. `claude -p` writes its log only at exit, so Claude's steps
+// come from its live session transcript; Codex writes its own steps to the log as it goes.
+const claudeProjects = join(env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects');
+function transcript(job) {
+  const dir = join(claudeProjects, job.cwd.replace(/[^a-zA-Z0-9]/g, '-'));
+  if (!existsSync(dir)) return null;
+  // The reviewer worktree is reused, so only a transcript written since this job started counts.
+  return readdirSync(dir).filter(name => name.endsWith('.jsonl')).map(name => join(dir, name))
+    .map(file => ({ file, time: statSync(file).mtimeMs })).filter(entry => entry.time >= job.started)
+    .sort((a, b) => b.time - a.time)[0]?.file ?? null;
+}
+const firstLine = text => String(text ?? '').trim().split('\n')[0];
+function claudeSteps(text) {
+  let entry;
+  try { entry = JSON.parse(text); } catch { return []; }
+  const content = Array.isArray(entry.message?.content) ? entry.message.content : [];
+  return content.map(part => {
+    const input = part.input ?? {};
+    if (entry.type === 'assistant' && part.type === 'text') return firstLine(part.text);
+    if (entry.type === 'assistant' && part.type === 'tool_use') return `${part.name}: ${firstLine(input.description ?? input.command ?? input.file_path ?? input.pattern)}`;
+    if (part.type !== 'tool_result' || !part.is_error) return '';
+    return `error: ${firstLine(Array.isArray(part.content) ? part.content.map(piece => piece.text ?? '').join('\n') : part.content)}`;
+  });
+}
+function progress(job) {
+  job.file ??= job.agent === 'claude' ? transcript(job) : join(logs, `${job.name}.log`);
+  if (!job.file || !existsSync(job.file)) return;
+  const fresh = readFileSync(job.file).subarray(job.offset);
+  const end = fresh.lastIndexOf('\n') + 1; // a line still being written waits for the next look
+  job.offset += end;
+  // shortcut: Codex lines are printed raw, its echoed prompt and command output included; parse its session file if that is too noisy.
+  for (const text of fresh.subarray(0, end).toString('utf8').split('\n')) {
+    for (const step of job.agent === 'claude' ? claudeSteps(text) : [text.trim()]) if (step) log(`${job.name}: ${step}`.slice(0, 240));
+  }
+}
+setInterval(() => { for (const job of running) progress(job); }, 2000).unref();
 
 const tries = new Map();
 // A task or PR that keeps failing waits for the owner instead of spinning.
@@ -298,6 +336,7 @@ for (;;) {
   for (const job of running) {
     if (job.code === undefined) continue;
     running.delete(job);
+    progress(job);
     (job.stage === 'worker' ? workerDone : reviewDone)(job);
   }
 }
