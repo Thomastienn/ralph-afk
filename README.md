@@ -1,321 +1,261 @@
 # ralph-afk
 
 Unattended runners for [Ralph](https://github.com/subsy/ralph-tui) on a
-[Beads](https://github.com/steveyegge/beads) backlog. They keep coding agents
-working through your epics while you are away. When one agent runs out of
-usage, they switch to another and wait for usage limits to reset.
+[Beads](https://github.com/steveyegge/beads) backlog. When one agent runs out
+of usage, they switch to another and wait for limits to reset.
 
-- `ralph` runs Ralph headless on one epic.
-- `ralph-afk` works through every ready epic, one task at a time, and switches
-  agents when one runs out of usage.
-- `ralph-afk --pr` runs several workers in parallel. Each task becomes its own
-  pull request, and a reviewer agent merges the PRs once CI passes.
-
-You plan with an agent while you are at the keyboard. The runners do the
-building while you are away.
-
-## The workflow
-
-Each feature goes through the same loop. The planning steps use
-[Matt Pocock's skills](https://github.com/mattpocock/skills) in Claude Code.
-They write only docs and tickets, never code.
-
-1. **Grill.** Run `/grill-with-docs` and describe the feature. The agent
-   asks numbered questions; answer them in one message (`q1 yes q2 ...`). As
-   decisions settle, it writes them to `GLOSSARY.md` and `docs/adr/`. For work
-   too big for one session, use `/wayfinder` instead. It maps the open
-   decisions as tickets and resolves them one at a time.
-2. **Spec.** Run `/to-spec`. It turns the conversation into
-   `docs/<feature>-spec.md`.
-3. **Mock up new UI.** For a new screen, panel or component, have an agent make
-   a rough mockup at `docs/mockups/<issue-id>.html` or `.png`. Label the ticket
-   `new-ui` and add a `Mockup:` line to its description. Tweaks that keep the
-   existing look need no mockup.
-4. **Ticket.** Run `/to-tickets`. It publishes one Beads epic per feature, with
-   a child task for each step and dependencies for the order. Size each task
-   for one Ralph run: one session, up to about 200k tokens of context. Merge
-   tasks that are too small; split tasks that are too big.
-5. **Walk away.** Start `ralph-afk` in tmux, or `ralph-afk --pr` to work
-   several tasks in parallel. It takes the oldest ready epic, works it one task
-   at a time, and switches agents when one runs out of usage.
-6. **Check back.** When the backlog runs dry, `ralph-afk` adds a full-suite
-   gate epic. That run fixes any failing tests and reviews the recent
-   commits. Then `ralph-afk` stops. Look at what needs you:
-
-   ```bash
-   bd list --status blocked          # tasks with an external blocker, noted in the task
-   bd list --label needs-human       # --pr mode: tasks or PRs that failed 3 times
-   cat .ralph-tui/progress.md        # what each task did
-   ```
-
-   Answer the notes, unblock the tasks, and run `ralph-afk` again.
-
-Plan the next feature while `ralph-afk` works on the last one. New epics join
-the queue on the next cycle, behind the epics that are older.
+| Command | What it does |
+| --- | --- |
+| `ralph` | One headless Ralph run on one epic. |
+| `ralph-afk` | Works every ready epic, one task at a time, switching agents on usage limits. |
+| `ralph-afk --pr [N]` | N parallel workers, one PR per task; a reviewer agent merges once CI passes. |
 
 ## Requirements
 
-- Git, Node.js, `jq`, and GNU coreutils and util-linux (`timeout`, `flock`)
+- Git, Node.js, `jq`, GNU coreutils and util-linux (`timeout`, `flock`)
 - [`ralph-tui`](https://github.com/subsy/ralph-tui) 0.12.0, on `PATH` or in `~/.bun/bin`
-- [`bd`](https://github.com/steveyegge/beads) (Beads), with the project's issues set up
-- `bv`, which Ralph's `beads-bv` tracker uses to pick tasks
-- At least one agent CLI, such as `claude` (Claude Code) or `codex`
-- For `--pr` mode: `gh`, authenticated, and a GitHub remote with CI
+- [`bd`](https://github.com/steveyegge/beads) (Beads) and `bv` (used by Ralph's `beads-bv` tracker)
+- `claude` and/or `codex`
+- `--pr` only: `gh`, authenticated, and a GitHub remote with CI
 
 ## Setup
 
-Set up your machine once, then each project you want Ralph to work on.
+### Once per machine
 
-### Machine
+Run in this repository:
 
-1. Put the runners on your `PATH`:
+```bash
+ln -s "$PWD/bin/ralph" "$PWD/bin/ralph-afk" ~/.local/bin/
 
-   ```bash
-   ln -s "$PWD/bin/ralph" "$PWD/bin/ralph-afk" ~/.local/bin/
-   ```
+mkdir -p ~/.config/ralph-tui/plugins/trackers ~/.config/ralph-tui/templates
+ln -s "$PWD/ralph-tui/config.toml" ~/.config/ralph-tui/
+ln -s "$PWD/ralph-tui/plugins/trackers/beads-resume.js" ~/.config/ralph-tui/plugins/trackers/
+ln -s "$PWD/ralph-tui/templates/beads.hbs" ~/.config/ralph-tui/templates/
 
-2. Link the Ralph defaults, the `beads-resume` tracker and its prompt into
-   `~/.config/ralph-tui/`:
+cp agents.example agents   # then edit; ignored by Git
+```
 
-   ```bash
-   mkdir -p ~/.config/ralph-tui/plugins/trackers ~/.config/ralph-tui/templates
-   ln -s "$PWD/ralph-tui/config.toml" ~/.config/ralph-tui/
-   ln -s "$PWD/ralph-tui/plugins/trackers/beads-resume.js" ~/.config/ralph-tui/plugins/trackers/
-   ln -s "$PWD/ralph-tui/templates/beads.hbs" ~/.config/ralph-tui/templates/
-   ```
+The linked files are global Ralph defaults; a project's
+`.ralph-tui/config.toml` overrides them:
 
-   These are global defaults for every `ralph-tui` run. A project's
-   `.ralph-tui/config.toml` overrides them.
+- `config.toml`: selects the `beads-resume` tracker, turns on Ralph's
+  auto-commit (the Codex sandbox keeps `.git` read-only), turns off
+  `fullAuto` (Codex rejects it).
+- `beads-resume.js`: extends `beads-bv`. Retries unfinished tasks first and
+  lets Ralph start with pending edits, which `--takeover` relies on. Exports a
+  local JSONL snapshot; never runs `bd sync`.
+- `beads.hbs`: the prompt each task runs with.
 
-3. Create your agents file from the example, then edit it:
+### Once per project
 
-   ```bash
-   cp agents.example agents
-   ```
+In the project's checkout:
 
-   `agents` is ignored by Git, so changing your models or agents never touches
-   the repository. To keep the file somewhere else, set `RALPH_AGENTS` to its
-   path.
-
-   To use other agents or models in one project, put an agents file at
-   `.ralph-tui/agents` in that project. It replaces the shared file for runs
-   in that checkout. `RALPH_AGENTS` still wins over both.
-
-### Project
-
-Run these in the project's checkout:
-
-1. Set up Beads: `bd init`.
-2. Optional: run `ralph-tui init` to give the project its own
-   `.ralph-tui/config.toml`, for example to set its default agent.
-3. In Claude Code, run `/setup-matt-pocock-skills` and choose Beads as the
-   issue tracker. It writes `docs/agents/issue-tracker.md` and
-   `docs/agents/domain.md`, which the planning skills read. Add your ticket
-   rules to `issue-tracker.md`: one epic per feature, tasks sized for one
-   Ralph run, and no full-suite gate tickets, because `ralph-afk` makes those.
-4. In `AGENTS.md`, authorize Ralph runs to implement, verify, close tasks and
-   commit without asking. Without it, agents stop to ask for approval and
-   nobody is there to give it.
-5. For `--pr` mode only: write `.ralph-tui/pr-worker.md` and
-   `.ralph-tui/pr-reviewer.md`, and set up CI on GitHub. See
-   [ralph-afk --pr](#ralph-afk---pr).
-6. Run one task to check the setup:
-
-   ```bash
-   ralph --agent codex --iterations 1
-   ```
-
-## Ralph defaults
-
-`ralph-tui/` holds what Ralph itself needs for this workflow:
-
-- `config.toml` selects the `beads-resume` tracker, turns on Ralph's
-  auto-commit (the Codex sandbox keeps `.git` read-only), and turns off
-  `fullAuto`, which Codex rejects.
-- `plugins/trackers/beads-resume.js` extends Ralph's `beads-bv` tracker. It
-  retries unfinished tasks before other work and lets Ralph start with pending
-  edits, which `--takeover` relies on. It exports a local JSONL snapshot and
-  never runs `bd sync`.
-- `templates/beads.hbs` is the prompt each task runs with.
+1. `bd init`.
+2. Optional: `ralph-tui init` for a project `.ralph-tui/config.toml`, e.g. to
+   set its default agent.
+3. Optional: `.ralph-tui/agents` for project-specific agents or models (see
+   [Which agents file is used](#which-agents-file-is-used)).
+4. In Claude Code, run `/setup-matt-pocock-skills` with Beads as the tracker.
+   It writes `docs/agents/issue-tracker.md` and `docs/agents/domain.md`. Add
+   your ticket rules to `issue-tracker.md`: one epic per feature, tasks sized
+   for one Ralph run, no full-suite gate tickets (`ralph-afk` makes those).
+5. In `AGENTS.md`, authorize Ralph runs to implement, verify, close tasks and
+   commit without asking. Otherwise agents stop for approval nobody gives.
+6. `--pr` only: write `.ralph-tui/pr-worker.md` and `.ralph-tui/pr-reviewer.md`,
+   and set up CI on GitHub.
+7. Smoke test: `ralph --agent codex --iterations 1`.
 
 ## Agents file
 
-Each line enables one agent for one stage:
-
-```text
-stage|agent|model|effort
-```
+One line per agent and stage: `stage|agent|model|effort`. See `agents.example`.
 
 | Field | Meaning |
 | --- | --- |
-| `stage` | `worker` for `ralph`, `ralph-afk` and the `ralph-afk --pr` workers; `reviewer` for the `--pr` reviewer only. Sequential mode ignores `reviewer` lines. |
-| `agent` | `claude` or `codex`. Any other agent is refused at start. |
-| `model` | The work model, passed as `--model`. `RALPH_<AGENT>_MODEL` overrides it for `ralph` and `ralph-afk`, for example `RALPH_CODEX_MODEL`. |
-| `effort` | Reasoning effort for `--pr` agents. `-` keeps the CLI default. `ralph` and `ralph-afk` ignore it. |
+| `stage` | `worker`: `ralph`, `ralph-afk`, `--pr` workers. `reviewer`: `--pr` reviewer only. |
+| `agent` | `claude` or `codex`. Anything else is refused at start. |
+| `model` | Work model, passed as `--model`. `RALPH_<AGENT>_MODEL` (e.g. `RALPH_CODEX_MODEL`) overrides it for `ralph` and `ralph-afk`. |
+| `effort` | Reasoning effort for `--pr` agents; `-` keeps the CLI default. Ignored by `ralph` and `ralph-afk`. |
 
-The probes are built in (`bin/ralph-probe.mjs`): a one-word request to Claude
-Haiku or `gpt-6-luna` at low effort, run in `/tmp`. They cost almost nothing.
-A probe cannot detect a limit that applies only to the work model.
+In `--pr` mode, line order within a stage is the fallback order.
+
+### Which agents file is used
+
+The first match wins. It is the same for `ralph`, `ralph-afk` and `--pr`:
+
+1. `RALPH_AGENTS`, if set. A relative path is resolved from the checkout root.
+2. `.ralph-tui/agents` in the checkout root, if it exists.
+3. `agents` in this repository, next to `bin/`.
+
+The project file replaces the shared one; the two are not merged. The
+launchers always `cd` to the checkout root first, so running from a
+subdirectory still finds `.ralph-tui/agents`. `--pr` mode allows
+uncommitted files under `.ralph-tui/`, so an uncommitted project agents file
+does not block it.
+
+### Probes
+
+`ralph-afk` and `--pr` check an agent with a built-in probe
+(`bin/ralph-probe.mjs`) before using it. The probe sends a one-word request to Claude Haiku
+or `gpt-6-luna` at low effort, in `/tmp`. It costs almost nothing. It cannot
+detect a limit that applies only to the work model.
 
 ## ralph
 
-Runs Ralph headless on one epic of the current checkout. You can run it from
-anywhere inside the checkout.
-
 ```bash
-ralph                            # oldest ready epic, the project's default agent
+ralph                            # oldest ready epic, project's default agent
 ralph my-epic --iterations 10
 ralph --agent codex              # Codex, with its model from the agents file
 ralph --agent codex --takeover   # stop the Ralph running here, then start
 ```
 
-- `--agent <name>` without `--model` adds that agent's work model. The model in
-  a project's `.ralph-tui/config.toml` belongs to the project's default agent.
-- `--takeover` safely stops the Ralph session that holds this checkout's lock.
-  It first checks that the lock matches a live Ralph process on this host and
-  checkout. Ralph gets 30 seconds to stop. Its child agents then get a
-  SIGTERM, and a SIGKILL 5 seconds later if needed. The interrupted task keeps
-  its claim, so `beads-resume` recovers its pending edits. Old session files
-  move to `.ralph-tui/reports/takeover-*`. Do not combine `--takeover` with
-  `--force` or `--resume`.
-- Other options pass through to `ralph-tui run --headless` unchanged.
+- Works from anywhere inside the checkout.
+- `--agent <name>` without `--model` adds that agent's work model. The model
+  in `.ralph-tui/config.toml` belongs to the project's default agent.
+- `--takeover` stops the Ralph that holds this checkout's lock, after checking
+  the lock matches a live Ralph on this host and checkout. Ralph gets 30 s,
+  then its child agents get SIGTERM, then SIGKILL 5 s later. The task keeps
+  its claim, so `beads-resume` recovers its edits. Old session files move to
+  `.ralph-tui/reports/takeover-*`. Do not combine with `--force` or `--resume`.
+- Other options pass through to `ralph-tui run --headless`.
 
 ## ralph-afk
 
-Keeps the backlog moving while nobody is at the keyboard. Start it once, in
-tmux or with `nohup`:
+Start once, in tmux or with `nohup`:
 
 ```bash
 ralph-afk                          # every ready epic, oldest first
-ralph-afk my-epic other-epic       # only these epics, in this order
-ralph-afk -a codex                 # only Codex for this run
-ralph-afk -a claude,codex my-epic  # only Claude and Codex, only this epic
+ralph-afk my-epic other-epic       # only these, in this order
+ralph-afk -a codex                 # only Codex this run
+ralph-afk -a claude,codex my-epic
 RALPH_AFK_SCHEDULE='00-07=codex 07-24=claude,codex' ralph-afk
 ```
 
-### How it works
+Each cycle:
 
-On each cycle, `ralph-afk` takes these steps:
+1. Closes epics whose children are all closed (`bd epic close-eligible`),
+   which unblocks their dependents.
+2. Picks the first epic with a ready or in-progress task. An open parentless
+   issue blocking one of its tasks (e.g. a bug filed mid-task) moves under the
+   epic so Ralph can work it.
+3. Probes the scheduled agents. It stays on the last agent used and switches
+   only when that agent stops answering.
+4. Runs `ralph --takeover --iterations 1` and waits.
 
-1. Closes every epic whose children are all closed (`bd epic close-eligible`).
-   This unblocks the epics that depend on it.
-2. Picks the first epic, oldest first or in the order you gave, that has a
-   ready or in-progress task. An open issue with no parent that blocks one of
-   the epic's tasks, such as a bug filed mid-task, moves under the epic so that
-   Ralph can work on it.
-3. Probes the scheduled agents and picks the first one that answers. It stays
-   on the agent that ran last and switches only when that agent stops
-   answering.
-4. Runs one task with `ralph --takeover --iterations 1` and waits for it to
-   end.
-
-It re-reads epics before every task, so epics you add or unblock mid-run take
-effect. Blocking dependencies between epics set the order in which they are
-released. Only one `ralph-afk` can run per checkout. Its first takeover stops
-any Ralph already running there, including an interactive one.
-
-Ralph 0.12.0 headless does not report a failed auto-commit. When a task closes
-but its edits are left uncommitted, `ralph-afk` commits them as
-`<type>: <id> <title>`. If a hook rejects that commit, it retries with
-`--no-verify`.
-
-When every epic is out of ready work, `ralph-afk` creates a full-suite gate
-epic. Its single task runs the project's full test suites, fixes the failures,
-and reviews the commits made since the last gate. It does this only if a task
-has closed since the last gate and no gate is still open. If you name epics on
-the command line, no gate is created. `ralph-afk` stops when no ready work is
-left.
+- Epics are re-read before every task, so new or unblocked epics join the
+  queue. Dependencies between epics set their order.
+- One `ralph-afk` per checkout. Its first takeover stops any Ralph already
+  running there, interactive ones included.
+- If a task closes but its edits are left uncommitted (Ralph 0.12.0 headless
+  does not report a failed auto-commit), `ralph-afk` commits them as
+  `<type>: <id> <title>`. If a hook rejects that commit, it retries with
+  `--no-verify`.
+- When no epic has ready work, it creates a full-suite gate epic. The gate
+  runs all test suites, fixes failures, and reviews commits since the last
+  gate. It is created only if a task closed since the last gate, no gate is
+  open, and you named no epics. Then `ralph-afk` stops.
+- Ctrl+C once: finish and commit the current task, then exit. Twice: stop at
+  once.
 
 ### Usage limits
 
-Ralph's own `fallbackAgents` is not used. Ralph 0.12.0 does not recognise
-subscription usage-limit errors, so a limited agent would fail every few
-seconds until the iteration limit runs out. `ralph-afk` probes the agents
-itself instead:
+Ralph's `fallbackAgents` is not used: Ralph 0.12.0 does not recognise
+subscription limit errors and would retry a limited agent until its
+iterations run out. `ralph-afk` probes instead:
 
-- If no scheduled agent answers, `ralph-afk` sleeps until the earliest time one
-  of them may be back. It then probes them all again and uses the first that
-  answers.
-- A limited agent reports when its usage resets. It counts as back one minute
-  after that time.
-- A failure that is not a usage limit (auth, network) counts as back after
-  `RALPH_AFK_WAIT` seconds.
-- With more than one schedule window, it also wakes at the next full hour,
-  because a new window may bring an agent that is usable.
-- If a run ends within two minutes without closing or blocking a task, it
-  waits `RALPH_AFK_WAIT` seconds before the next try. That covers a limit hit
-  at once, a startup failure, or a crash. A task that finishes quickly starts
-  the next one at once.
-- A running task is never probed. If it hits a limit, the Ralph run ends. The
-  next available agent then resumes the task and its pending edits through
-  `beads-resume`.
+- No agent answers: it sleeps until the earliest time one may be back, then
+  probes all of them again.
+- A limited agent counts as back 1 minute after its reported reset. Other
+  failures (auth, network) count as back after `RALPH_AFK_WAIT` seconds.
+- With several schedule windows, it also wakes on the hour, in case a new
+  window brings a usable agent.
+- A run that ends within 2 minutes without closing or blocking a task waits
+  `RALPH_AFK_WAIT` seconds before the next try. This covers an instant limit,
+  a startup failure or a crash.
+- A running task is never probed. If it hits a limit, the run ends and the
+  next agent resumes the task and its edits through `beads-resume`.
 
 ### Schedule
 
 `RALPH_AFK_SCHEDULE` is a space-separated list of `FROM-TO=agents` windows in
-local hours. Agents in a window are tried in order. The default is
-`00-24=claude,codex`.
+local hours, agents tried in order. The default is `00-24=claude,codex`.
 
-- No agent runs in an hour outside every window.
-- A window that crosses midnight must be written as two windows:
-  `22-24=codex 00-06=codex`.
-- The schedule is read when a task starts. A running task is not interrupted at
-  a window boundary.
-- `-a` narrows the schedule. It does not replace it. An agent named with `-a`
-  that is unknown, or that is in no window, is refused at start.
-
-### Stopping
-
-Press Ctrl+C once to let the current task finish and commit, then exit. Press
-it again to stop at once. The task runs in its own session, so Ctrl+C never
-reaches it directly.
+- No agent runs outside every window.
+- Split windows that cross midnight: `22-24=codex 00-06=codex`.
+- Read when a task starts; a running task is not interrupted at a boundary.
+- `-a` narrows the schedule; it does not replace it. An `-a` agent that is
+  unknown or in no window is refused at start.
 
 ## ralph-afk --pr
 
-Parallel mode. Up to N workers each take a ready task into their own worktree
-and branch, open a PR, and wait for CI. One reviewer at a time reviews, fixes
-and squash-merges PRs whose checks have finished.
-
 ```bash
-ralph-afk --pr      # 3 workers
-ralph-afk --pr 5    # 5 workers
+ralph-afk --pr           # 3 workers
+ralph-afk --pr 5
 ralph-afk -a codex --pr  # only Codex; needs a codex reviewer line
 ```
 
-The project needs two prompts that describe how its workers and reviewer work:
-`.ralph-tui/pr-worker.md` and `.ralph-tui/pr-reviewer.md`.
+Each worker takes a ready task into its own worktree and branch, opens a PR
+and waits for CI. One reviewer at a time reviews, fixes and squash-merges PRs
+whose checks have finished. Needs `.ralph-tui/pr-worker.md` and
+`.ralph-tui/pr-reviewer.md`.
 
-- At start, your local default branch is pushed to `origin`, so that workers
-  branch from your latest planning commits. A changed `.beads/issues.jsonl` is
+- At start, the local default branch is pushed to `origin` so workers branch
+  from your latest planning commits. A changed `.beads/issues.jsonl` is
   committed first. Any other uncommitted change outside `.ralph-tui/` stops the
-  run: commit or stash it first.
-- Worktrees live outside the checkout, in `../<repo>-pr/`. Agent logs go to
-  `.ralph-tui/pr-logs/`.
-- Workers take tasks with no parent first, then tasks in epic age order. Tasks
-  labelled `gate:backlog`, `in-review` or `needs-human` are skipped. A `new-ui`
-  task waits until its description has a `Mockup:` line.
+  run.
+- Worktrees: `../<repo>-pr/`. Agent logs: `.ralph-tui/pr-logs/`.
+- Task order: parentless tasks first, then by epic age. Skips tasks labelled
+  `gate:backlog`, `in-review` or `needs-human`. A `new-ui` task waits for a
+  `Mockup:` line in its description.
 - After a merge, the task closes and its branch and worktree are removed. The
   main checkout fast-forwards if it is on the default branch with no local
   changes.
-- Every 5 merges, the `slow-tests.yml` workflow is dispatched. If it fails, a
-  task is filed to fix it.
-- A task or PR whose agent fails 3 times is labelled `needs-human`. Other work
-  continues, and the run lists these items when it ends.
-- A limited agent is not probed again before its reported reset. Meanwhile,
-  the next line of the same stage takes over.
-- Ctrl+C works as in sequential mode: once to let running agents finish, twice
-  to stop them.
+- Every 5 merges, `slow-tests.yml` is dispatched. A failure files a fix task.
+- A task or PR whose agent fails 3 times gets `needs-human`. Other work
+  continues, and these items are listed at the end.
+- A limited agent is not probed again before its reported reset. The next
+  line of the same stage takes over.
+- Ctrl+C: as in sequential mode.
 
 ## Environment variables
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `RALPH_AGENTS` | `.ralph-tui/agents` in the checkout if present, else `agents` next to `bin/` | Path to the agents file. |
-| `RALPH_AFK_SCHEDULE` | `00-24=claude,codex` | Which agents may run in each hour. |
-| `RALPH_AFK_WAIT` | `600` | Seconds before an agent with no known reset time is probed again. |
-| `RALPH_<AGENT>_MODEL` | from `agents` | Work model override for `ralph` and `ralph-afk`. |
-| `RALPH_PR_WORKERS` | `3` | Worker count for `--pr` when none is given. |
-| `RALPH_PR_POLL` | `120` | Seconds between `--pr` checks of tasks and PRs. |
+| `RALPH_AGENTS` | see [lookup](#which-agents-file-is-used) | Agents file path. |
+| `RALPH_AFK_SCHEDULE` | `00-24=claude,codex` | Agents allowed per hour. |
+| `RALPH_AFK_WAIT` | `600` | Seconds before re-probing an agent with no known reset. |
+| `RALPH_<AGENT>_MODEL` | from agents file | Work model override for `ralph` and `ralph-afk`. |
+| `RALPH_PR_WORKERS` | `3` | `--pr` worker count when none is given. |
+| `RALPH_PR_POLL` | `120` | Seconds between `--pr` checks. |
+
+## Workflow
+
+Plan at the keyboard with [Matt Pocock's skills](https://github.com/mattpocock/skills)
+in Claude Code (they write only docs and tickets), then let the runners build.
+
+1. **Grill:** `/grill-with-docs`, describe the feature, answer the numbered
+   questions in one message (`q1 yes q2 ...`). Decisions go to `GLOSSARY.md`
+   and `docs/adr/`. For bigger work, `/wayfinder` maps open decisions as
+   tickets and resolves them one by one.
+2. **Spec:** `/to-spec` writes `docs/<feature>-spec.md`.
+3. **Mockup (new UI only):** put a rough mockup at
+   `docs/mockups/<issue-id>.html` or `.png`, label the ticket `new-ui`, add a
+   `Mockup:` line to its description. Tweaks to the existing look need none.
+4. **Ticket:** `/to-tickets` makes one Beads epic per feature, a child task per
+   step, dependencies for order. Size each task for one Ralph run (one
+   session, up to about 200k tokens); merge tiny tasks, split big ones.
+5. **Walk away:** `ralph-afk` (or `ralph-afk --pr`) in tmux.
+6. **Check back:**
+
+   ```bash
+   bd list --status blocked          # external blocker, noted in the task
+   bd list --label needs-human       # --pr: tasks or PRs that failed 3 times
+   cat .ralph-tui/progress.md        # what each task did
+   ```
+
+   Answer the notes, unblock tasks, run `ralph-afk` again.
+
+Plan the next feature while `ralph-afk` works; new epics queue behind older
+ones on the next cycle.
 
 ## Tests
 
@@ -323,5 +263,5 @@ The project needs two prompts that describe how its workers and reviewer work:
 node --test test/*.test.mjs
 ```
 
-The tests run the scripts against fake CLIs in a temporary checkout. They make
-no model calls and read `agents.example`, not your own `agents` file.
+Runs the scripts against fake CLIs in a temporary checkout. No model calls;
+reads `agents.example`, not your `agents`.
