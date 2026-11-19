@@ -215,8 +215,10 @@ whose checks all passed. Needs `.ralph-tui/pr-worker.md` and
   main checkout fast-forwards if it is on the default branch with no local
   changes.
 - Every 5 merges, `slow-tests.yml` is dispatched. A failure files a fix task.
-- A PR labelled `in-review` whose CI failed gets `needs-human`, not a
-  reviewer. To hand it back to a worker, remove both labels.
+- A PR labelled `in-review` whose CI failed before any review gets
+  `needs-human`, not a reviewer. To hand it back to a worker, remove both
+  labels. Once a reviewer has started a PR, red CI goes back to the reviewer,
+  up to 3 runs.
 - A task or PR whose agent fails 3 times gets `needs-human`. Other work
   continues, and these items are listed at the end.
 - A limited agent is not probed again before its reported reset. The next

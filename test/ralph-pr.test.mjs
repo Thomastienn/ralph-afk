@@ -54,6 +54,7 @@ switch (args.slice(0, 2).join(' ')) {
     prs.push({ number: prs.length + 1, headRefName: flag('--head'), title: flag('--title'), state: 'OPEN', statusCheckRollup: [{ status: 'COMPLETED', conclusion: (process.env.FIXTURE_RED || '').split(' ').includes(flag('--head')) ? 'FAILURE' : 'SUCCESS' }] });
     write('prs.json', prs); break;
   case 'pr list': out(prs.filter(pr => pr.state === 'OPEN')); break;
+  case 'pr fail': prs[args[2] - 1].statusCheckRollup[0].conclusion = 'FAILURE'; write('prs.json', prs); break; // fixture only: CI goes red
   case 'pr view': out({ state: prs[args[2] - 1].state }); break;
   case 'pr merge': prs[args[2] - 1].state = 'MERGED'; write('prs.json', prs); fs.appendFileSync(process.env.FIX + '/merges', args[2] + '\\n'); break;
   case 'workflow run':
@@ -80,6 +81,11 @@ fi
 if [[ $prompt == *'PR: #'* ]]; then
   [[ ! -e "$FIX/reviewing" ]] || echo overlap >> "$FIX/overlap"
   touch "$FIX/reviewing"; /usr/bin/sleep 0.2
+  # FIXTURE_REVIEW_RED: the first review pushes a fix whose CI goes red, then gives up.
+  if [[ -n $FIXTURE_REVIEW_RED && ! -e "$FIX/review-red" ]]; then
+    touch "$FIX/review-red"; gh pr fail "$(sed -n 's/^PR: #//p' <<< "$prompt")"; /usr/bin/sleep 0.3
+    rm "$FIX/reviewing"; exit 1
+  fi
   gh pr merge "$(sed -n 's/^PR: #//p' <<< "$prompt")" --squash
   rm "$FIX/reviewing"; exit
 fi
@@ -238,6 +244,15 @@ test('the reviewer takes only PRs whose CI passed; a red PR in review gets needs
   assert.notEqual(f.issue('E1.1').status, 'closed');
   assert.deepEqual(f.read('agents').filter(line => /^claude E1\.1 .*--model opus/.test(line)), []);
   assert.match(result.stdout, /is in review but its CI failed; labelled needs-human/);
+});
+
+test('a reviewer whose fix turns CI red keeps the PR and runs again', () => {
+  const f = fixture([epic('E1'), task('E1.1', 'E1')]);
+  const result = f.run({ FIXTURE_REVIEW_RED: '1' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(!f.issue('E1.1').labels.includes('needs-human'));
+  assert.equal(f.issue('E1.1').status, 'closed');
+  assert.equal(f.read('agents').filter(line => /^claude E1\.1 .*--model opus/.test(line)).length, 2);
 });
 
 test('every 5 merges the slow suite runs on GitHub; a failure files a fix task that a worker takes', () => {
