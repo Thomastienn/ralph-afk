@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { retryAt } from '../bin/ralph-reset.mjs';
+import { retryAt } from '../bin/ralph-probe.mjs';
 
 const now = new Date(2026, 10, 19, 14, 0).getTime(); // 19 Nov 2026 14:00 local
 const minute = 60000;

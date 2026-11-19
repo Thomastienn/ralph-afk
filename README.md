@@ -51,7 +51,7 @@ usage, they switch to another and wait for usage limits to reset.
    the repository. To keep the file somewhere else, set `RALPH_AGENTS` to its
    path.
 
-4. Check each probe by hand. A working probe prints `pong`. Then run one task:
+4. Run one task:
 
    ```bash
    ralph --agent codex --iterations 1
@@ -75,20 +75,19 @@ usage, they switch to another and wait for usage limits to reset.
 Each line enables one agent for one stage:
 
 ```text
-stage|agent|model|effort|probe
+stage|agent|model|effort
 ```
 
 | Field | Meaning |
 | --- | --- |
 | `stage` | `worker` for `ralph`, `ralph-afk` and the `ralph-afk --pr` workers; `reviewer` for the `--pr` reviewer only. Sequential mode ignores `reviewer` lines. |
-| `agent` | A Ralph agent plugin, as listed by `ralph-tui plugins agents`. `--pr` uses only the `claude` and `codex` lines. |
+| `agent` | `claude` or `codex`. Any other agent is refused at start. |
 | `model` | The work model, passed as `--model`. `RALPH_<AGENT>_MODEL` overrides it for `ralph` and `ralph-afk`, for example `RALPH_CODEX_MODEL`. |
 | `effort` | Reasoning effort for `--pr` agents. `-` keeps the CLI default. `ralph` and `ralph-afk` ignore it. |
-| `probe` | A cheap request, run in `/tmp`. The agent counts as usable when the reply contains `pong`. |
 
-Probes use a cheap model, so they cost almost nothing. A probe cannot detect a
-limit that applies only to the work model. Claude and Codex have done real
-runs. Cursor and Copilot have only had their probes checked.
+The probes are built in (`bin/ralph-probe.mjs`): a one-word request to Claude
+Haiku or `gpt-6-luna` at low effort, run in `/tmp`. They cost almost nothing.
+A probe cannot detect a limit that applies only to the work model.
 
 ## ralph
 
@@ -169,11 +168,10 @@ itself instead:
 - If no scheduled agent answers, `ralph-afk` sleeps until the earliest time one
   of them may be back. It then probes them all again and uses the first that
   answers.
-- A limited Claude or Codex reports when its usage resets. It counts as back
-  one minute after that time. Claude reports the reset only when its probe uses
-  `--output-format stream-json --verbose`.
-- Any other agent, or a failure that is not a usage limit (auth, network),
-  counts as back after `RALPH_AFK_WAIT` seconds.
+- A limited agent reports when its usage resets. It counts as back one minute
+  after that time.
+- A failure that is not a usage limit (auth, network) counts as back after
+  `RALPH_AFK_WAIT` seconds.
 - With more than one schedule window, it also wakes at the next full hour,
   because a new window may bring an agent that is usable.
 - If a run ends within two minutes without closing or blocking a task, it

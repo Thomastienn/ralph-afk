@@ -119,13 +119,16 @@ test('an agent missing from the table never launches', () => {
   assert.deepEqual(unknown.runs(), []);
 });
 
-test('an agents line whose stage is not worker or reviewer is refused at start', () => {
+test('an agents line with another stage, agent or field count is refused at start', () => {
   const f = fixture();
   const old = join(f.cwd, 'old-agents');
-  writeFileSync(old, "# comment\n\nworker|codex|m|-|echo pong\nralph|claude|opus|-|echo pong\n");
-  const result = f.run({ RALPH_AGENTS: old });
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /old-agents line 4: the stage must be worker or reviewer/);
+  // The retired ralph stage, an agent with no built-in probe, and the retired probe column.
+  for (const line of ['ralph|claude|opus|-', 'worker|cursor|auto|-', 'worker|claude|opus|-|echo pong']) {
+    writeFileSync(old, `# comment\n\nworker|codex|m|-\n${line}\n`);
+    const result = f.run({ RALPH_AGENTS: old });
+    assert.equal(result.status, 1, line);
+    assert.match(result.stderr, /old-agents line 4: expected stage\|agent\|model\|effort/, line);
+  }
   assert.deepEqual(f.runs(), []);
 });
 

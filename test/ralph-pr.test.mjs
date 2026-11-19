@@ -174,8 +174,7 @@ test('with Claude out of usage a Codex worker takes the task; the reviewer waits
 test('-a limits workers and the reviewer to those agents; a stage left with none is refused', () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1')]);
   const table = join(f.base, 'agents');
-  const probe = "claude -p 'Reply with exactly: pong'";
-  writeFileSync(table, ['claude', 'codex'].flatMap(agent => [`worker|${agent}|w|-|${probe}`, `reviewer|${agent}|r|-|${probe}`]).join('\n'));
+  writeFileSync(table, ['claude', 'codex'].flatMap(agent => [`worker|${agent}|w|-`, `reviewer|${agent}|r|-`]).join('\n'));
   const result = f.run({ RALPH_AGENTS: table }, ['-a', 'codex']);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const agents = f.read('agents');
@@ -183,7 +182,7 @@ test('-a limits workers and the reviewer to those agents; a stage left with none
 
   const refused = fixture([epic('E1'), task('E1.1', 'E1')]).run({}, ['-a', 'codex']);
   assert.equal(refused.status, 1);
-  assert.match(refused.stderr, /No claude or codex reviewer line in .* for -a codex/);
+  assert.match(refused.stderr, /No reviewer line in .* for -a codex/);
 });
 
 test('a task whose worker keeps failing gets needs-human after 3 tries while other work merges', () => {

@@ -1,12 +1,12 @@
 // ralph-afk --pr [workers]: parallel PR mode. Each worker takes one ready task into its own worktree and
 // branch, opens a PR and waits for CI; one reviewer at a time reviews, fixes and squash-merges green PRs.
 // ralph-afk holds the checkout lock and starts this from the repository root. See docs/ralph.md.
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, symlinkSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { retryAt } from './ralph-reset.mjs';
+import { probe } from './ralph-probe.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = process.cwd();
@@ -39,13 +39,13 @@ if (!Number.isInteger(slots) || slots < 1) fail('Usage: ralph-afk [-a agent,agen
 for (const [stage, file] of Object.entries(prompts)) {
   if (!existsSync(file)) fail(`Missing ${file}: the ${stage} prompt for ralph-afk --pr.`);
 }
-// Workers share the worker lines with ralph-afk; other agents there serve sequential mode only.
+// Workers share the worker lines with ralph-afk.
 const table = readFileSync(agentsFile, 'utf8').split('\n')
   .filter(line => line.trim() && !line.trimStart().startsWith('#'))
-  .map(line => { const [stage, agent, model, effort, ...probe] = line.split('|'); return { stage, agent, model, effort, probe: probe.join('|') }; })
-  .filter(row => ['claude', 'codex'].includes(row.agent) && (!only.length || only.includes(row.agent)));
+  .map(line => { const [stage, agent, model, effort] = line.split('|'); return { stage, agent, model, effort }; })
+  .filter(row => !only.length || only.includes(row.agent));
 for (const stage of Object.keys(prompts)) {
-  if (!table.some(row => row.stage === stage)) fail(`No claude or codex ${stage} line in ${agentsFile}${only.length ? ` for -a ${only.join(',')}` : ''}.`);
+  if (!table.some(row => row.stage === stage)) fail(`No ${stage} line in ${agentsFile}${only.length ? ` for -a ${only.join(',')}` : ''}.`);
 }
 
 // Same windows as ralph-afk: space-separated FROM-TO=agents in local hours.
@@ -62,10 +62,9 @@ const probed = new Map(); // agent -> { ok, until }
 function usable(row) {
   const known = probed.get(row.agent);
   if (known && known.until > Date.now()) return known.ok;
-  const probe = spawnSync('bash', ['-c', row.probe], { cwd: '/tmp', encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 180000 });
-  const ok = probe.status === 0 && (probe.stdout ?? '').toLowerCase().includes('pong');
-  // A limited Claude or Codex says when it resets, so it is not probed before then; other agents wait RALPH_AFK_WAIT.
-  probed.set(row.agent, { ok, until: (!ok && retryAt(`${probe.stdout}\n${probe.stderr}`)) || Date.now() + waitMs });
+  const { ok, until } = probe(row.agent);
+  // A limited agent is not probed before its reported reset; with none, it waits RALPH_AFK_WAIT.
+  probed.set(row.agent, { ok, until: until || Date.now() + waitMs });
   if (!ok) log(`${row.agent} is not usable now (usage limit, auth or network).`);
   return ok;
 }
