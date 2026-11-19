@@ -228,6 +228,13 @@ whose checks all passed. Needs `.ralph-tui/pr-worker.md` and
   up to 3 runs.
 - A task or PR whose agent fails 3 times gets `needs-human`. Other work
   continues. These items are listed when it runs out of work and at the end.
+  Failure counts survive a restart (`.ralph-tui/pr-logs/tries.json`) and reset
+  when the task gets `needs-human`.
+- A task labelled `in-review` whose PR is no longer open is checked on GitHub.
+  If the PR merged while no reviewer was watching, the task closes as after a
+  merge. If the PR was closed or never opened, the task gets `needs-human`.
+- A failed `gh`, `bd` or `git` call during a check is logged and retried at the
+  next check. The run does not stop.
 - A limited agent is not probed again before its reported reset. The next
   line of the same stage takes over.
 - Ctrl+C: as in sequential mode.

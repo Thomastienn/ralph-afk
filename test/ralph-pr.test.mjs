@@ -48,12 +48,16 @@ const args = process.argv.slice(2);
 const flag = name => args[args.indexOf(name) + 1];
 const out = value => console.log(JSON.stringify(value));
 const prs = read('prs.json', []);
+// FIXTURE_GH_FLAKY: the first pr list fails, as GitHub does now and then.
+if (process.env.FIXTURE_GH_FLAKY && args[0] === 'pr' && args[1] === 'list' && !fs.existsSync(process.env.FIX + '/gh-flaked')) {
+  fs.writeFileSync(process.env.FIX + '/gh-flaked', ''); console.error('HTTP 502: Bad Gateway'); process.exit(1);
+}
 switch (args.slice(0, 2).join(' ')) {
   case 'repo view': out({ defaultBranchRef: { name: 'master' } }); break;
   case 'pr create':
     prs.push({ number: prs.length + 1, headRefName: flag('--head'), title: flag('--title'), state: 'OPEN', statusCheckRollup: [{ status: 'COMPLETED', conclusion: (process.env.FIXTURE_RED || '').split(' ').includes(flag('--head')) ? 'FAILURE' : 'SUCCESS' }] });
     write('prs.json', prs); break;
-  case 'pr list': out(prs.filter(pr => pr.state === 'OPEN')); break;
+  case 'pr list': out(prs.filter(pr => (flag('--state') === 'all' || pr.state === 'OPEN') && (!args.includes('--head') || pr.headRefName === flag('--head')))); break;
   case 'pr fail': prs[args[2] - 1].statusCheckRollup[0].conclusion = 'FAILURE'; write('prs.json', prs); break; // fixture only: CI goes red
   case 'pr view': out({ state: prs[args[2] - 1].state }); break;
   case 'pr merge': prs[args[2] - 1].state = 'MERGED'; write('prs.json', prs); fs.appendFileSync(process.env.FIX + '/merges', args[2] + '\\n'); break;
@@ -89,6 +93,7 @@ if [[ $prompt == *'PR: #'* ]]; then
   gh pr merge "$(sed -n 's/^PR: #//p' <<< "$prompt")" --squash
   rm "$FIX/reviewing"; exit
 fi
+[[ -z $FIXTURE_WORKER_SLEEP ]] || /usr/bin/sleep "$FIXTURE_WORKER_SLEEP"
 [[ " $FIXTURE_FAIL " != *" $task "* ]] || exit 1
 git log -1 --format="$task %s" >> "$FIX/bases"
 echo "$task" > "$task.txt" && git add "$task.txt" && git commit -qm "$task" && git push -q origin "$task"
@@ -246,6 +251,46 @@ test('a task whose worker keeps failing gets needs-human after 3 tries while oth
   assert.ok(f.issue('E1.1').labels.includes('needs-human'));
   assert.equal(f.issue('E1.2').status, 'closed');
   assert.match(result.stdout, /Waiting for a human:\n {2}E1\.1 Do E1\.1/);
+});
+
+test('a failed gh call is logged and retried; the run goes on and merges', async () => {
+  const f = fixture([epic('E1'), task('E1.1', 'E1')]);
+  const result = await f.run({ FIXTURE_GH_FLAKY: '1' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /Check failed: HTTP 502: Bad Gateway; trying again in 0\.05s\./);
+  assert.equal(f.issue('E1.1').status, 'closed');
+});
+
+test('a task in review whose PR merged unwatched closes; one with no PR gets needs-human', async () => {
+  const inReview = { status: 'in_progress', labels: ['in-review'] };
+  const f = fixture([epic('E1'), task('E1.1', 'E1', inReview), task('E1.2', 'E1', { ...inReview, labels: ['in-review'] })]);
+  writeFileSync(join(f.fix, 'prs.json'), JSON.stringify([{ number: 1, headRefName: 'E1.1', title: 'E1.1', state: 'MERGED', statusCheckRollup: [] }]));
+  const result = await f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.issue('E1.1').status, 'closed');
+  assert.match(result.stdout, /Merged PR #1 \(E1\.1\)\./);
+  assert.ok(f.issue('E1.2').labels.includes('needs-human'));
+  assert.match(result.stdout, /E1\.2 is in review but it has no PR; labelled needs-human\./);
+  assert.deepEqual(f.read('agents'), []);
+});
+
+test('failed runs count across restarts; needs-human resets the count', async () => {
+  const f = fixture([epic('E1'), task('E1.1', 'E1')]);
+  mkdirSync(join(f.cwd, '.ralph-tui/pr-logs'));
+  writeFileSync(join(f.cwd, '.ralph-tui/pr-logs/tries.json'), JSON.stringify({ 'E1.1': 2 }));
+  const result = await f.run({ FIXTURE_FAIL: 'E1.1' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.claims().length, 1);
+  assert.ok(f.issue('E1.1').labels.includes('needs-human'));
+  assert.deepEqual(JSON.parse(readFileSync(join(f.cwd, '.ralph-tui/pr-logs/tries.json'), 'utf8')), {});
+});
+
+test('after one Ctrl+C it waits for the running agents without polling gh and bd in a loop', async () => {
+  const f = fixture([epic('E1'), task('E1.1', 'E1')]);
+  const result = await f.run({ FIXTURE_WORKER_SLEEP: '1', RALPH_PR_POLL: '5' }, [], out => /as worker for E1\.1/.test(out));
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /E1\.1: PR in review\./);
+  assert.ok(f.read('bd-calls').filter(call => call.startsWith('epic')).length <= 3, f.read('bd-calls').join('\n'));
 });
 
 test('the reviewer takes only PRs whose CI passed; a red PR in review gets needs-human', async () => {

@@ -2,7 +2,7 @@
 // branch, opens a PR and waits for CI; one reviewer at a time reviews, fixes and squash-merges green PRs.
 // ralph-afk holds the checkout lock and starts this from the repository root. See docs/ralph.md.
 import { execFileSync, spawn } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, statSync, symlinkSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -141,11 +141,16 @@ function progress(job) {
 }
 setInterval(() => { for (const job of running) progress(job); }, 2000).unref();
 
-const tries = new Map();
+// Kept on disk, so a restart does not give a failing task TRIES more runs.
+const triesFile = join(logs, 'tries.json');
+const tries = new Map(Object.entries(existsSync(triesFile) ? JSON.parse(readFileSync(triesFile, 'utf8')) : {}));
+const saveTries = () => writeFileSync(triesFile, JSON.stringify(Object.fromEntries(tries)));
 // A task or PR that keeps failing waits for the owner instead of spinning.
 function failed(id, what) {
   const n = (tries.get(id) ?? 0) + 1;
-  tries.set(id, n);
+  if (n < TRIES) tries.set(id, n);
+  else tries.delete(id); // the owner removing needs-human gives it TRIES fresh runs
+  saveTries();
   if (n < TRIES) return;
   attempt('bd', ['update', id, '--add-label', 'needs-human']);
   attempt('bd', ['note', id, `ralph-afk --pr: ${what} failed ${n} times; see .ralph-tui/pr-logs/.`]);
@@ -266,14 +271,34 @@ function reviewDone(job) {
     if (Date.now() - job.started < 120000) down(job.agent);
     return failed(job.Task, 'the review');
   }
-  attempt('bd', ['close', job.Task, '--reason', `Merged in PR ${job.PR}`]);
-  const path = join(trees, job.Task);
+  merged(job.Task, number);
+}
+function merged(id, number) {
+  attempt('bd', ['close', id, '--reason', `Merged in PR #${number}`]);
+  const path = join(trees, id);
   if (existsSync(path)) attempt('git', ['worktree', 'remove', '--force', path]);
-  attempt('git', ['branch', '-D', job.Task]);
-  attempt('git', ['push', '-q', 'origin', '--delete', job.Task]); // GitHub keeps merged branches unless asked
-  log(`Merged PR ${job.PR} (${job.Task}).`);
+  attempt('git', ['branch', '-D', id]);
+  attempt('git', ['push', '-q', 'origin', '--delete', id]); // GitHub keeps merged branches unless asked
+  if (tries.delete(id)) saveTries();
+  log(`Merged PR #${number} (${id}).`);
   pull();
   if (++merges % SLOW_EVERY === 0) dispatchSlow();
+}
+// A task in review whose PR left the open list: merged while no reviewer was watching (a crash or a failed
+// gh call), closed by hand, or never opened. A merged one is finished here; the rest wait for the owner.
+function strays(open) {
+  const waiting = json('bd', ['list', '--label', 'in-review', '--status', 'in_progress', '--json', '--limit', '0']) ?? [];
+  for (const task of waiting) {
+    if (labelled(task, 'needs-human') || open.some(pr => pr.headRefName === task.id) || [...running].some(job => job.Task === task.id)) continue;
+    const prs = json('gh', ['pr', 'list', '--head', task.id, '--state', 'all', '--json', 'number,state']) ?? [];
+    if (prs.some(pr => pr.state === 'OPEN')) continue; // opened after the open list was read
+    const done = prs.find(pr => pr.state === 'MERGED');
+    if (done) { merged(task.id, done.number); continue; }
+    const why = prs.length ? `its PR #${prs[0].number} is ${prs[0].state.toLowerCase()}` : 'it has no PR';
+    attempt('bd', ['update', task.id, '--add-label', 'needs-human']);
+    attempt('bd', ['note', task.id, `ralph-afk --pr: labelled in-review but ${why}.`]);
+    log(`${task.id} is in review but ${why}; labelled needs-human.`);
+  }
 }
 // The owner's checkout follows GitHub only while it has nothing of its own; the Beads export does not count.
 function pull() {
@@ -348,7 +373,8 @@ function status(prs, waiting) {
 log(`PR mode on ${base}: up to ${slots} workers, one reviewer.`);
 let idle = false;
 let shown = 0; // when the last status block printed
-for (;;) {
+// One pass over the queue; true once a requested stop has nothing left running.
+function poll() {
   const closed = JSON.parse(attempt('bd', ['epic', 'close-eligible', '--json']) ?? '{}').closed ?? [];
   if (closed.length) log(`Closed finished epics: ${closed.join(' ')}`);
   checkSlow();
@@ -360,6 +386,7 @@ for (;;) {
     startWorker(task, row);
   }
   const open = taskPrs();
+  strays(open);
   const prs = open.filter(pr => !labelled(pr.task, 'needs-human'));
   const reviewing = [...running].some(job => job.stage === 'reviewer');
   // A worker labels a PR in-review only on green CI; one that is red anyway waits for the owner.
@@ -374,7 +401,7 @@ for (;;) {
     if (row) startReview(next, row);
     else log('No reviewer agent available now; waiting.');
   }
-  if (stopping && !running.size) break;
+  if (stopping && !running.size) return true;
   // Out of work: keep checking, so tasks filed later start without a restart.
   const nothing = !running.size && !ready.length && !prs.length && !slow;
   if (nothing && !idle) {
@@ -386,7 +413,15 @@ for (;;) {
     shown = Date.now();
     status(open, ready.filter(task => ![...running].some(job => job.Task === task.id)).length);
   }
-  await Promise.race([sleep(pollMs, null, { signal: halt.signal }).catch(() => {}), ...[...running].map(job => job.done)]);
+}
+for (;;) {
+  // A failed gh, bd or git call (network, rate limit) must not end the run: its agents run detached and would be orphaned.
+  try { if (poll()) break; } catch (error) {
+    log(`Check failed: ${firstLine(error.stderr || error.message)}; trying again in ${pollMs / 1000}s.`);
+    if (stopping && !running.size) break;
+  }
+  // Once stopping, halt stays aborted and its sleep returns at once: wait for the agents only, or this spins on gh and bd.
+  await Promise.race([...(stopping ? [] : [sleep(pollMs, null, { signal: halt.signal }).catch(() => {})]), ...[...running].map(job => job.done)]);
   for (const job of running) {
     if (job.code === undefined) continue;
     running.delete(job);
