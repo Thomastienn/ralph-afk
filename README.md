@@ -201,13 +201,20 @@ whose checks all passed. Needs `.ralph-tui/pr-worker.md` and
 - At start, the local default branch is pushed to `origin` so workers branch
   from your latest planning commits. A changed `.beads/issues.jsonl` is
   committed first. Any other uncommitted change outside `.ralph-tui/` stops the
-  run.
+  run. Commits you make on it later are pushed before the next worker
+  branches.
+- Out of work, it keeps running and checks for new tasks every
+  `RALPH_PR_POLL` seconds, so tasks filed later start without a restart. Only
+  Ctrl+C stops it.
 - Worktrees: `../<repo>-pr/`. Agent logs: `.ralph-tui/pr-logs/`.
 - Every agent's steps print as they happen, one line each, prefixed with its
   task or `review-<PR>`; failed tool calls show as `error:`. `claude -p` writes
   its log only at exit, so Claude steps come from its live session transcript
   in `~/.claude/projects/` (or `$CLAUDE_CONFIG_DIR/projects/`). Codex output is
   printed as Codex writes it to the log.
+- While busy, a status block prints every `RALPH_PR_POLL` seconds: each running
+  agent with its model, minutes so far and last step, then each open PR with
+  its labels, CI state and the agent on it.
 - Task order: parentless tasks first, then by epic age. Skips tasks labelled
   `gate:backlog`, `in-review` or `needs-human`. A `new-ui` task waits for a
   `Mockup:` line in its description.
@@ -220,7 +227,7 @@ whose checks all passed. Needs `.ralph-tui/pr-worker.md` and
   labels. Once a reviewer has started a PR, red CI goes back to the reviewer,
   up to 3 runs.
 - A task or PR whose agent fails 3 times gets `needs-human`. Other work
-  continues, and these items are listed at the end.
+  continues. These items are listed when it runs out of work and at the end.
 - A limited agent is not probed again before its reported reset. The next
   line of the same stage takes over.
 - Ctrl+C: as in sequential mode.

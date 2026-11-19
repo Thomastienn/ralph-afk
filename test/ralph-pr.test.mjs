@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -90,6 +90,7 @@ if [[ $prompt == *'PR: #'* ]]; then
   rm "$FIX/reviewing"; exit
 fi
 [[ " $FIXTURE_FAIL " != *" $task "* ]] || exit 1
+git log -1 --format="$task %s" >> "$FIX/bases"
 echo "$task" > "$task.txt" && git add "$task.txt" && git commit -qm "$task" && git push -q origin "$task"
 gh pr create --head "$task" --title "$task"
 bd update "$task" --add-label in-review`;
@@ -128,14 +129,25 @@ function fixture(issues) {
   const options = env => ({
     cwd, env: { ...process.env, ...identity, FIX: fix, PATH: `${fix}/bin:${process.env.PATH}`, RALPH_PR_POLL: '0.05', RALPH_AFK_WAIT: '0', CLAUDE_CONFIG_DIR: join(fix, 'claude'), RALPH_AGENTS: fileURLToPath(new URL('../agents.example', import.meta.url)), ...env },
   });
-  const run = (env = {}, args = []) => spawnSync('bash', [script, '--pr', ...args], { ...options(env), encoding: 'utf8', timeout: 30000 });
+  // --pr runs until Ctrl+C: send it once stop(stdout so far) holds, by default when it reports being out of work.
+  const run = (env = {}, args = [], stop = out => /Out of work/.test(out)) => new Promise(resolve => {
+    const child = spawn('bash', [script, '--pr', ...args], options(env));
+    let stdout = '', stderr = '', sent = false;
+    const timer = setTimeout(() => child.kill('SIGKILL'), 30000);
+    child.stdout.on('data', data => {
+      stdout += data;
+      if (!sent && stop(stdout)) { sent = true; child.kill('SIGINT'); }
+    });
+    child.stderr.on('data', data => { stderr += data; });
+    child.on('close', status => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
+  });
   const issue = id => JSON.parse(readFileSync(join(fix, 'issues.json'), 'utf8')).find(i => i.id === id);
-  return { base, cwd, run, read, issue, claims: () => read('bd-calls').filter(call => call.endsWith('--claim')) };
+  return { base, cwd, fix, git, run, read, issue, claims: () => read('bd-calls').filter(call => call.endsWith('--claim')) };
 }
 
-test('workers open one PR per task, oldest epic first; one reviewer at a time merges them and cleans up', () => {
+test('workers open one PR per task, oldest epic first; one reviewer at a time merges them and cleans up', async () => {
   const f = fixture([epic('E2', '2026-01-02'), task('E2.1', 'E2'), epic('E1', '2026-01-01'), task('E1.1', 'E1'), task('E1.2', 'E1')]);
-  const result = f.run({}, ['2']);
+  const result = await f.run({}, ['2']);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(f.claims(), ['update E1.1 --claim', 'update E1.2 --claim', 'update E2.1 --claim']);
   assert.deepEqual(f.read('merges'), ['1', '2', '3']);
@@ -150,33 +162,35 @@ test('workers open one PR per task, oldest epic first; one reviewer at a time me
   assert.ok(agents.filter(line => / E\d\.\d -p --permission-mode auto --model sonnet --effort high$/.test(line)).length === 3, agents.join('\n'));
   // The fake reviewer reads the task line too, so match the reviewer's model instead.
   assert.equal(agents.filter(line => line.endsWith('-p --permission-mode auto --model opus --effort high')).length, 3, agents.join('\n'));
-  assert.match(result.stdout, /No ready tasks and no open PRs left/);
+  assert.match(result.stdout, /Out of work\. Checking for new tasks every 0\.05s/);
+  assert.match(result.stdout, /Status: \d of 2 workers busy, reviewer (busy|free); \d ready tasks waiting; \d merged this run\.\n {2}worker E\d\.\d \(claude sonnet, 0m\): /);
+  assert.match(result.stdout, /\n {2}PR #1 E1\.1( \[in-review\])?: CI passed/);
   for (const id of ['E1.1', 'E1.2', 'E2.1', 'review-1']) {
     assert.match(result.stdout, new RegExp(`\\] ${id}: Bash: Run tests\\n.*\\] ${id}: error: boom\\n`), id);
   }
 });
 
-test('--pr refuses to start without the worker prompt', () => {
+test('--pr refuses to start without the worker prompt', async () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1')]);
   rmSync(join(f.cwd, '.ralph-tui/pr-worker.md'));
-  const result = f.run();
+  const result = await f.run();
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Missing \.ralph-tui\/pr-worker\.md/);
   assert.deepEqual(f.claims(), []);
 });
 
-test('--pr refuses to start with uncommitted changes and pushes nothing', () => {
+test('--pr refuses to start with uncommitted changes and pushes nothing', async () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1')]);
   writeFileSync(join(f.cwd, 'README'), 'edited\n');
   writeFileSync(join(f.cwd, 'spec.md'), 'new\n');
-  const result = f.run();
+  const result = await f.run();
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Uncommitted changes; commit or stash them first:[\s\S]*README[\s\S]*spec\.md/);
   assert.deepEqual(f.claims(), []);
   assert.equal(execFileSync('git', ['log', '--oneline', 'origin/master'], { cwd: f.cwd, encoding: 'utf8' }).trim().split('\n').length, 1);
 });
 
-test('--pr commits a changed Beads export before the push', () => {
+test('--pr commits a changed Beads export before the push', async () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1')]);
   const git = (...args) => execFileSync('git', args, { cwd: f.cwd, encoding: 'utf8', env: { ...process.env, ...identity } }).trim();
   mkdirSync(join(f.cwd, '.beads'));
@@ -184,15 +198,15 @@ test('--pr commits a changed Beads export before the push', () => {
   git('add', '.beads/issues.jsonl');
   git('commit', '-qm', 'beads');
   writeFileSync(join(f.cwd, '.beads/issues.jsonl'), '{"planned":true}\n');
-  const result = f.run();
+  const result = await f.run();
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(git('log', '--format=%s', 'origin/master'), /chore\(beads\): export before ralph-afk --pr/);
 });
 
-test('a new-ui ticket without a Mockup line is skipped with a reminder; one with a mockup runs', () => {
+test('a new-ui ticket without a Mockup line is skipped with a reminder; one with a mockup runs', async () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1', { labels: ['new-ui'], description: 'A new panel.' }),
     task('E1.2', 'E1', { labels: ['new-ui'], description: 'A new panel.\nMockup: docs/mockups/E1.2.html' })]);
-  const result = f.run();
+  const result = await f.run();
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /Skipping E1\.1: a new-ui ticket needs a "Mockup:" line/);
   assert.deepEqual(f.claims(), ['update E1.2 --claim']);
@@ -200,9 +214,9 @@ test('a new-ui ticket without a Mockup line is skipped with a reminder; one with
   assert.equal(f.issue('E1.2').status, 'closed');
 });
 
-test('with Claude out of usage a Codex worker takes the task; the reviewer waits for Claude', () => {
+test('with Claude out of usage a Codex worker takes the task; the reviewer waits for Claude', async () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1')]);
-  const result = f.run({ FIXTURE_LIMITED: 'claude' });
+  const result = await f.run({ FIXTURE_LIMITED: 'claude' });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const [worker, reviewer, ...rest] = f.read('agents');
   assert.match(worker, /^codex E1\.1 exec --approve-for-me -m gpt-6\.2-sol -c model_reasoning_effort="medium" -c sandbox_workspace_write\.writable_roots=\[.*\] -c sandbox_workspace_write\.network_access=true$/);
@@ -210,23 +224,23 @@ test('with Claude out of usage a Codex worker takes the task; the reviewer waits
   assert.deepEqual(rest, []);
 });
 
-test('-a limits workers and the reviewer to those agents; a stage left with none is refused', () => {
+test('-a limits workers and the reviewer to those agents; a stage left with none is refused', async () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1')]);
   const table = join(f.base, 'agents');
   writeFileSync(table, ['claude', 'codex'].flatMap(agent => [`worker|${agent}|w|-`, `reviewer|${agent}|r|-`]).join('\n'));
-  const result = f.run({ RALPH_AGENTS: table }, ['-a', 'codex']);
+  const result = await f.run({ RALPH_AGENTS: table }, ['-a', 'codex']);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const agents = f.read('agents');
   assert.deepEqual(agents.map(line => line.split(' ').slice(0, 6).join(' ')), ['codex E1.1 exec --approve-for-me -m w', 'codex E1.1 exec --approve-for-me -m r']);
 
-  const refused = fixture([epic('E1'), task('E1.1', 'E1')]).run({}, ['-a', 'codex']);
+  const refused = await fixture([epic('E1'), task('E1.1', 'E1')]).run({}, ['-a', 'codex']);
   assert.equal(refused.status, 1);
   assert.match(refused.stderr, /No reviewer line in .* for -a codex/);
 });
 
-test('a task whose worker keeps failing gets needs-human after 3 tries while other work merges', () => {
+test('a task whose worker keeps failing gets needs-human after 3 tries while other work merges', async () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1'), task('E1.2', 'E1')]);
-  const result = f.run({ FIXTURE_FAIL: 'E1.1' });
+  const result = await f.run({ FIXTURE_FAIL: 'E1.1' });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(f.claims().filter(call => call.includes('E1.1')).length, 3);
   assert.ok(f.issue('E1.1').labels.includes('needs-human'));
@@ -234,9 +248,9 @@ test('a task whose worker keeps failing gets needs-human after 3 tries while oth
   assert.match(result.stdout, /Waiting for a human:\n {2}E1\.1 Do E1\.1/);
 });
 
-test('the reviewer takes only PRs whose CI passed; a red PR in review gets needs-human', () => {
+test('the reviewer takes only PRs whose CI passed; a red PR in review gets needs-human', async () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1'), task('E1.2', 'E1')]);
-  const result = f.run({ FIXTURE_RED: 'E1.1' });
+  const result = await f.run({ FIXTURE_RED: 'E1.1' });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(f.read('merges').length, 1);
   assert.equal(f.issue('E1.2').status, 'closed');
@@ -246,18 +260,39 @@ test('the reviewer takes only PRs whose CI passed; a red PR in review gets needs
   assert.match(result.stdout, /is in review but its CI failed; labelled needs-human/);
 });
 
-test('a reviewer whose fix turns CI red keeps the PR and runs again', () => {
+test('a reviewer whose fix turns CI red keeps the PR and runs again', async () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1')]);
-  const result = f.run({ FIXTURE_REVIEW_RED: '1' });
+  const result = await f.run({ FIXTURE_REVIEW_RED: '1' });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.ok(!f.issue('E1.1').labels.includes('needs-human'));
   assert.equal(f.issue('E1.1').status, 'closed');
   assert.equal(f.read('agents').filter(line => /^claude E1\.1 .*--model opus/.test(line)).length, 2);
 });
 
-test('every 5 merges the slow suite runs on GitHub; a failure files a fix task that a worker takes', () => {
+test('out of work, --pr keeps checking: a task filed later runs on the planning commits made since', async () => {
+  const f = fixture([epic('E1')]);
+  let filed = false;
+  const result = await f.run({}, [], out => {
+    if (!filed && /Out of work/.test(out)) {
+      filed = true;
+      writeFileSync(join(f.cwd, 'spec.md'), 'plan\n');
+      f.git('add', 'spec.md');
+      f.git('commit', '-qm', 'plan E1.1');
+      const issues = JSON.parse(readFileSync(join(f.fix, 'issues.json'), 'utf8'));
+      writeFileSync(join(f.fix, 'issues.new'), JSON.stringify([...issues, task('E1.1', 'E1')]));
+      renameSync(join(f.fix, 'issues.new'), join(f.fix, 'issues.json')); // the fake bd never reads half a file
+    }
+    return (out.match(/Out of work/g) ?? []).length === 2;
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.issue('E1.1').status, 'closed');
+  assert.match(result.stdout, /Pushed the new commits on master to origin/);
+  assert.deepEqual(f.read('bases'), ['E1.1 plan E1.1']);
+});
+
+test('every 5 merges the slow suite runs on GitHub; a failure files a fix task that a worker takes', async () => {
   const f = fixture([epic('E1'), ...[1, 2, 3, 4, 5].map(n => task(`E1.${n}`, 'E1'))]);
-  const result = f.run({ FIXTURE_SLOW: 'failure' });
+  const result = await f.run({ FIXTURE_SLOW: 'failure' });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(f.read('dispatches'), ['workflow run slow-tests.yml --ref master']);
   assert.equal(f.issue('T-new').title, 'Fix test:slow failures');
@@ -271,7 +306,7 @@ test('--pr shares the sequential lock: a second supervisor in the checkout is re
   const holder = spawn('flock', [join(f.cwd, '.ralph-tui/afk.lock'), 'sleep', '5']);
   await new Promise(resolve => setTimeout(resolve, 200));
   try {
-    const result = f.run();
+    const result = await f.run();
     assert.equal(result.status, 1);
     assert.match(result.stderr, /already running in this checkout/);
     assert.deepEqual(f.claims(), []);

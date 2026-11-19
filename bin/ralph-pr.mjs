@@ -92,7 +92,7 @@ function launch(row, stage, name, cwd, facts) {
   // detached: Ctrl+C in this terminal reaches only the supervisor, never a running agent.
   const child = spawn(bin, args, { cwd, stdio: ['ignore', out, out], detached: true });
   closeSync(out);
-  const job = { stage, name, agent: row.agent, cwd, offset: 0, started: Date.now(), child, ...Object.fromEntries(facts.map(fact => [fact.slice(0, fact.indexOf(': ')), fact.slice(fact.indexOf(': ') + 2)])) };
+  const job = { stage, name, agent: row.agent, model: row.model, cwd, offset: 0, started: Date.now(), child, ...Object.fromEntries(facts.map(fact => [fact.slice(0, fact.indexOf(': ')), fact.slice(fact.indexOf(': ') + 2)])) };
   job.done = new Promise(resolve => {
     child.on('exit', code => resolve((job.code = code ?? 1)));
     child.on('error', error => { log(`Could not start ${bin}: ${error.message}`); resolve((job.code = 127)); });
@@ -134,7 +134,9 @@ function progress(job) {
   job.offset += end;
   // shortcut: Codex lines are printed raw, its echoed prompt and command output included; parse its session file if that is too noisy.
   for (const text of fresh.subarray(0, end).toString('utf8').split('\n')) {
-    for (const step of job.agent === 'claude' ? claudeSteps(text) : [text.trim()]) if (step) log(`${job.name}: ${step}`.slice(0, 240));
+    for (const step of job.agent === 'claude' ? claudeSteps(text) : [text.trim()]) {
+      if (step) log(`${job.name}: ${(job.last = step)}`.slice(0, 240));
+    }
   }
 }
 setInterval(() => { for (const job of running) progress(job); }, 2000).unref();
@@ -200,6 +202,7 @@ function startWorker(task, row) {
   try {
     if (!existsSync(path)) {
       run('git', ['fetch', '-q', 'origin']);
+      pushBase();
       const branch = attempt('git', ['rev-parse', '-q', '--verify', `refs/heads/${task.id}`]);
       run('git', ['worktree', 'add', '-q', ...(branch ? [path, task.id] : ['-b', task.id, path, `origin/${base}`])]);
     }
@@ -210,6 +213,12 @@ function startWorker(task, row) {
     return failed(task.id, 'making the worktree');
   }
   launch(row, 'worker', task.id, path, [`Task: ${task.id}`, `Title: ${task.title}`, `Branch: ${task.id}`, `Base: ${base}`]);
+}
+// A task added while this runs may come with planning commits; workers branch from origin, so push them first.
+function pushBase() {
+  if (run('git', ['rev-list', '--count', `origin/${base}..${base}`]) === '0') return;
+  if (attempt('git', ['push', '-q', 'origin', base]) !== null) return log(`Pushed the new commits on ${base} to origin.`);
+  log(`Could not push local ${base} to origin; workers branch from origin/${base} without its new commits.`);
 }
 function workerDone(job) {
   const task = show(job.Task);
@@ -307,15 +316,38 @@ function createTask(title, description) {
 }
 
 let stopping = false;
+const halt = new AbortController(); // Ctrl+C ends an idle wait at once
 const stopAll = () => { for (const job of running) try { process.kill(-job.child.pid, 'SIGTERM'); } catch {} };
 process.on('SIGINT', () => {
   if (stopping) { stopAll(); process.exit(130); }
   stopping = true;
+  halt.abort();
   log('Stopping after the running agents finish. Press Ctrl+C again to stop now.');
 });
 process.on('SIGTERM', () => { stopAll(); process.exit(143); });
 
+function listParked() {
+  const parked = json('bd', ['list', '--label', 'needs-human', '--status', 'open,in_progress,blocked', '--json', '--limit', '0']) ?? [];
+  if (!parked.length) return;
+  console.log('Waiting for a human:');
+  for (const task of parked) console.log(`  ${task.id} ${task.title}`);
+}
+const minutes = start => `${Math.floor((Date.now() - start) / 60000)}m`;
+function status(prs, waiting) {
+  const jobs = [...running];
+  log(`Status: ${jobs.filter(job => job.stage === 'worker').length} of ${slots} workers busy, reviewer ${jobs.some(job => job.stage === 'reviewer') ? 'busy' : 'free'}; ${waiting} ready tasks waiting; ${merges} merged this run.`);
+  for (const job of jobs) console.log(`  ${job.stage} ${job.name} (${job.agent} ${job.model}, ${minutes(job.started)}): ${job.last ?? 'starting'}`.slice(0, 240));
+  for (const pr of prs) {
+    const ci = !pr.statusCheckRollup?.length ? 'no CI yet' : !settled(pr) ? 'CI running' : passed(pr) ? 'CI passed' : 'CI failed';
+    const labels = (pr.task.labels ?? []).filter(label => ['in-review', 'needs-human'].includes(label));
+    const agent = jobs.find(job => job.Task === pr.task.id)?.stage;
+    console.log(`  PR #${pr.number} ${pr.task.id}${labels.length ? ` [${labels.join(', ')}]` : ''}: ${ci}${agent ? `, ${agent} running` : ''}`);
+  }
+}
+
 log(`PR mode on ${base}: up to ${slots} workers, one reviewer.`);
+let idle = false;
+let shown = 0; // when the last status block printed
 for (;;) {
   const closed = JSON.parse(attempt('bd', ['epic', 'close-eligible', '--json']) ?? '{}').closed ?? [];
   if (closed.length) log(`Closed finished epics: ${closed.join(' ')}`);
@@ -327,7 +359,8 @@ for (;;) {
     if (!row) { log('No worker agent available now.'); break; }
     startWorker(task, row);
   }
-  const prs = taskPrs().filter(pr => !labelled(pr.task, 'needs-human'));
+  const open = taskPrs();
+  const prs = open.filter(pr => !labelled(pr.task, 'needs-human'));
   const reviewing = [...running].some(job => job.stage === 'reviewer');
   // A worker labels a PR in-review only on green CI; one that is red anyway waits for the owner.
   for (const pr of prs.filter(pr => labelled(pr.task, 'in-review') && settled(pr) && !passed(pr) && !reviewed.has(pr.number))) {
@@ -341,8 +374,19 @@ for (;;) {
     if (row) startReview(next, row);
     else log('No reviewer agent available now; waiting.');
   }
-  if (!running.size && (stopping || (!ready.length && !prs.length && !slow))) break;
-  await Promise.race([sleep(pollMs), ...[...running].map(job => job.done)]);
+  if (stopping && !running.size) break;
+  // Out of work: keep checking, so tasks filed later start without a restart.
+  const nothing = !running.size && !ready.length && !prs.length && !slow;
+  if (nothing && !idle) {
+    log(`Out of work. Checking for new tasks every ${pollMs / 1000}s; Ctrl+C to stop.`);
+    listParked();
+  }
+  idle = nothing;
+  if (!idle && Date.now() - shown >= pollMs) {
+    shown = Date.now();
+    status(open, ready.filter(task => ![...running].some(job => job.Task === task.id)).length);
+  }
+  await Promise.race([sleep(pollMs, null, { signal: halt.signal }).catch(() => {}), ...[...running].map(job => job.done)]);
   for (const job of running) {
     if (job.code === undefined) continue;
     running.delete(job);
@@ -351,12 +395,7 @@ for (;;) {
   }
 }
 
-if (stopping) log('Stop requested. Stopping.');
-else log('No ready tasks and no open PRs left. Stopping.');
+log('Stop requested. Stopping.');
 // Commit the export once here so the next start pushes it with the planning commits.
 commitBeads('chore(beads): export after ralph-afk --pr');
-const parked = json('bd', ['list', '--label', 'needs-human', '--status', 'open,in_progress,blocked', '--json', '--limit', '0']) ?? [];
-if (parked.length) {
-  console.log('Waiting for a human:');
-  for (const task of parked) console.log(`  ${task.id} ${task.title}`);
-}
+listParked();
