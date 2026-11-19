@@ -8,7 +8,7 @@ export PATH="$HOME/.bun/bin:$PATH"
 
 plugin="$HOME/.config/ralph-tui/plugins/trackers/beads-resume.js"
 if [[ ! -f "$plugin" ]]; then
-  echo "Missing Ralph tracker plugin: $plugin (run ~/thomas_config/setup.sh apply --configs-only)" >&2
+  echo "Missing Ralph tracker plugin: $plugin (link it from $(readlink -f -- "$here/../ralph-tui/plugins/trackers/beads-resume.js"); see README.md)" >&2
   exit 1
 fi
 

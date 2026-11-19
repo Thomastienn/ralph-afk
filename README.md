@@ -16,8 +16,7 @@ usage, they switch to another and wait for usage limits to reset.
 - Git, Node.js, `jq`, and GNU coreutils and util-linux (`timeout`, `flock`)
 - [`ralph-tui`](https://github.com/subsy/ralph-tui) 0.12.0, on `PATH` or in `~/.bun/bin`
 - [`bd`](https://github.com/steveyegge/beads) (Beads), with the project's issues set up
-- The `beads-resume` tracker plugin at
-  `~/.config/ralph-tui/plugins/trackers/beads-resume.js`
+- `bv`, which Ralph's `beads-bv` tracker uses to pick tasks
 - At least one agent CLI, such as `claude` (Claude Code) or `codex`
 - For `--pr` mode: `gh`, authenticated, and a GitHub remote with CI
 
@@ -29,7 +28,20 @@ usage, they switch to another and wait for usage limits to reset.
    ln -s "$PWD/bin/ralph" "$PWD/bin/ralph-afk" ~/.local/bin/
    ```
 
-2. Create your agents file from the example, then edit it:
+2. Link the Ralph defaults, the `beads-resume` tracker and its prompt into
+   `~/.config/ralph-tui/`:
+
+   ```bash
+   mkdir -p ~/.config/ralph-tui/plugins/trackers ~/.config/ralph-tui/templates
+   ln -s "$PWD/ralph-tui/config.toml" ~/.config/ralph-tui/
+   ln -s "$PWD/ralph-tui/plugins/trackers/beads-resume.js" ~/.config/ralph-tui/plugins/trackers/
+   ln -s "$PWD/ralph-tui/templates/beads.hbs" ~/.config/ralph-tui/templates/
+   ```
+
+   These are global defaults for every `ralph-tui` run. A project's
+   `.ralph-tui/config.toml` overrides them.
+
+3. Create your agents file from the example, then edit it:
 
    ```bash
    cp agents.example agents
@@ -39,11 +51,24 @@ usage, they switch to another and wait for usage limits to reset.
    the repository. To keep the file somewhere else, set `RALPH_AGENTS` to its
    path.
 
-3. Check each probe by hand. A working probe prints `pong`. Then run one task:
+4. Check each probe by hand. A working probe prints `pong`. Then run one task:
 
    ```bash
    ralph --agent codex --iterations 1
    ```
+
+## Ralph defaults
+
+`ralph-tui/` holds what Ralph itself needs for this workflow:
+
+- `config.toml` selects the `beads-resume` tracker, turns on Ralph's
+  auto-commit (the Codex sandbox keeps `.git` read-only), and turns off
+  `fullAuto`, which Codex rejects.
+- `plugins/trackers/beads-resume.js` extends Ralph's `beads-bv` tracker. It
+  retries unfinished tasks before other work and lets Ralph start with pending
+  edits, which `--takeover` relies on. It exports a local JSONL snapshot and
+  never runs `bd sync`.
+- `templates/beads.hbs` is the prompt each task runs with.
 
 ## Agents file
 
