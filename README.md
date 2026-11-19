@@ -238,6 +238,8 @@ whose checks all passed. Needs `.ralph-tui/pr-worker.md` and
 - A limited agent is not probed again before its reported reset. The next
   line of the same stage takes over.
 - Ctrl+C: as in sequential mode.
+- When the supervisor dies any other way (`kill -9`, a closed terminal), each
+  running agent and its child processes get SIGTERM within 2 s.
 
 ## Environment variables
 

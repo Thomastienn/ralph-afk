@@ -90,7 +90,9 @@ function launch(row, stage, name, cwd, facts) {
   const [bin, args] = command(row, prompt);
   const out = openSync(join(logs, `${name}.log`), 'a');
   // detached: Ctrl+C in this terminal reaches only the supervisor, never a running agent.
-  const child = spawn(bin, args, { cwd, stdio: ['ignore', out, out], detached: true });
+  // The watcher ends the agent's group once this supervisor is gone, even after kill -9 or a closed terminal.
+  const watch = `(while kill -0 ${process.pid} 2>/dev/null; do sleep 2; done; kill -TERM 0) & w=$!; "$@"; s=$?; kill $w 2>/dev/null; exit $s`;
+  const child = spawn('sh', ['-c', watch, 'sh', bin, ...args], { cwd, stdio: ['ignore', out, out], detached: true });
   closeSync(out);
   const job = { stage, name, agent: row.agent, model: row.model, cwd, offset: 0, started: Date.now(), child, ...Object.fromEntries(facts.map(fact => [fact.slice(0, fact.indexOf(': ')), fact.slice(fact.indexOf(': ') + 2)])) };
   job.done = new Promise(resolve => {

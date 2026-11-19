@@ -93,7 +93,7 @@ if [[ $prompt == *'PR: #'* ]]; then
   gh pr merge "$(sed -n 's/^PR: #//p' <<< "$prompt")" --squash
   rm "$FIX/reviewing"; exit
 fi
-[[ -z $FIXTURE_WORKER_SLEEP ]] || /usr/bin/sleep "$FIXTURE_WORKER_SLEEP"
+[[ -z $FIXTURE_WORKER_SLEEP ]] || { echo $$ >> "$FIX/pids"; /usr/bin/sleep "$FIXTURE_WORKER_SLEEP"; }
 [[ " $FIXTURE_FAIL " != *" $task "* ]] || exit 1
 git log -1 --format="$task %s" >> "$FIX/bases"
 echo "$task" > "$task.txt" && git add "$task.txt" && git commit -qm "$task" && git push -q origin "$task"
@@ -135,13 +135,13 @@ function fixture(issues) {
     cwd, env: { ...process.env, ...identity, FIX: fix, PATH: `${fix}/bin:${process.env.PATH}`, RALPH_PR_POLL: '0.05', RALPH_AFK_WAIT: '0', CLAUDE_CONFIG_DIR: join(fix, 'claude'), RALPH_AGENTS: fileURLToPath(new URL('../agents.example', import.meta.url)), ...env },
   });
   // --pr runs until Ctrl+C: send it once stop(stdout so far) holds, by default when it reports being out of work.
-  const run = (env = {}, args = [], stop = out => /Out of work/.test(out)) => new Promise(resolve => {
+  const run = (env = {}, args = [], stop = out => /Out of work/.test(out), signal = 'SIGINT') => new Promise(resolve => {
     const child = spawn('bash', [script, '--pr', ...args], options(env));
     let stdout = '', stderr = '', sent = false;
     const timer = setTimeout(() => child.kill('SIGKILL'), 30000);
     child.stdout.on('data', data => {
       stdout += data;
-      if (!sent && stop(stdout)) { sent = true; child.kill('SIGINT'); }
+      if (!sent && stop(stdout)) { sent = true; child.kill(signal); }
     });
     child.stderr.on('data', data => { stderr += data; });
     child.on('close', status => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
@@ -356,4 +356,15 @@ test('--pr shares the sequential lock: a second supervisor in the checkout is re
     assert.match(result.stderr, /already running in this checkout/);
     assert.deepEqual(f.claims(), []);
   } finally { holder.kill(); }
+});
+
+test('a supervisor killed with SIGKILL takes its running agents with it', async () => {
+  const f = fixture([epic('E1'), task('E1.1', 'E1')]);
+  await f.run({ FIXTURE_WORKER_SLEEP: '30' }, [], () => existsSync(join(f.fix, 'pids')), 'SIGKILL');
+  const pid = Number(f.read('pids')[0]);
+  const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  try {
+    for (let i = 0; i < 50 && alive(); i++) await new Promise(resolve => setTimeout(resolve, 100));
+    assert.ok(!alive(), 'worker still running after its supervisor died');
+  } finally { if (alive()) process.kill(pid, 'SIGKILL'); }
 });
