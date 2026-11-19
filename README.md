@@ -72,15 +72,15 @@ usage, they switch to another and wait for usage limits to reset.
 
 ## Agents file
 
-Each line enables one agent. `ralph`, `ralph-afk` and `ralph-afk --pr`
-(workers and reviewer) all read the same lines:
+Each line enables one agent for one stage:
 
 ```text
-agent|model|effort|probe
+stage|agent|model|effort|probe
 ```
 
 | Field | Meaning |
 | --- | --- |
+| `stage` | `worker` for `ralph`, `ralph-afk` and the `ralph-afk --pr` workers; `reviewer` for the `--pr` reviewer only. Sequential mode ignores `reviewer` lines. |
 | `agent` | A Ralph agent plugin, as listed by `ralph-tui plugins agents`. `--pr` uses only the `claude` and `codex` lines. |
 | `model` | The work model, passed as `--model`. `RALPH_<AGENT>_MODEL` overrides it for `ralph` and `ralph-afk`, for example `RALPH_CODEX_MODEL`. |
 | `effort` | Reasoning effort for `--pr` agents. `-` keeps the CLI default. `ralph` and `ralph-afk` ignore it. |
@@ -213,7 +213,7 @@ and squash-merges PRs whose checks have finished.
 ```bash
 ralph-afk --pr      # 3 workers
 ralph-afk --pr 5    # 5 workers
-ralph-afk -a codex --pr  # only Codex, for workers and reviewer
+ralph-afk -a codex --pr  # only Codex; needs a codex reviewer line
 ```
 
 The project needs two prompts that describe how its workers and reviewer work:
@@ -234,7 +234,7 @@ The project needs two prompts that describe how its workers and reviewer work:
 - A task or PR whose agent fails 3 times is labelled `needs-human`. Other work
   continues, and the run lists these items when it ends.
 - A limited agent is not probed again before its reported reset. Meanwhile,
-  the next usable line in the agents file takes over.
+  the next line of the same stage takes over.
 - Ctrl+C works as in sequential mode: once to let running agents finish, twice
   to stop them.
 

@@ -39,12 +39,14 @@ if (!Number.isInteger(slots) || slots < 1) fail('Usage: ralph-afk [-a agent,agen
 for (const [stage, file] of Object.entries(prompts)) {
   if (!existsSync(file)) fail(`Missing ${file}: the ${stage} prompt for ralph-afk --pr.`);
 }
-// The same lines as ralph-afk; workers and the reviewer both take the first usable one.
+// Workers share the worker lines with ralph-afk; other agents there serve sequential mode only.
 const table = readFileSync(agentsFile, 'utf8').split('\n')
   .filter(line => line.trim() && !line.trimStart().startsWith('#'))
-  .map(line => { const [agent, model, effort, ...probe] = line.split('|'); return { agent, model, effort, probe: probe.join('|') }; })
+  .map(line => { const [stage, agent, model, effort, ...probe] = line.split('|'); return { stage, agent, model, effort, probe: probe.join('|') }; })
   .filter(row => ['claude', 'codex'].includes(row.agent) && (!only.length || only.includes(row.agent)));
-if (!table.length) fail(`No claude or codex line in ${agentsFile}${only.length ? ` for -a ${only.join(',')}` : ''}; ralph-afk --pr runs those only.`);
+for (const stage of Object.keys(prompts)) {
+  if (!table.some(row => row.stage === stage)) fail(`No claude or codex ${stage} line in ${agentsFile}${only.length ? ` for -a ${only.join(',')}` : ''}.`);
+}
 
 // Same windows as ralph-afk: space-separated FROM-TO=agents in local hours.
 function scheduled() {
@@ -67,8 +69,8 @@ function usable(row) {
   if (!ok) log(`${row.agent} is not usable now (usage limit, auth or network).`);
   return ok;
 }
-// The first usable agent in table order.
-const pick = () => table.find(row => scheduled().includes(row.agent) && usable(row));
+// The first usable agent of the stage in table order.
+const pick = stage => table.find(row => row.stage === stage && scheduled().includes(row.agent) && usable(row));
 const down = agent => probed.set(agent, { ok: false, until: Date.now() + waitMs });
 
 const commonGit = run('git', ['rev-parse', '--path-format=absolute', '--git-common-dir']);
@@ -271,7 +273,7 @@ for (;;) {
   const workers = [...running].filter(job => job.stage === 'worker');
   const ready = stopping ? [] : readyTasks().filter(task => !workers.some(job => job.Task === task.id));
   for (const task of ready.slice(0, slots - workers.length)) {
-    const row = pick();
+    const row = pick('worker');
     if (!row) { log('No worker agent available now.'); break; }
     startWorker(task, row);
   }
@@ -279,7 +281,7 @@ for (;;) {
   const reviewing = [...running].some(job => job.stage === 'reviewer');
   const next = prs.find(pr => labelled(pr.task, 'in-review') && settled(pr));
   if (!stopping && !reviewing && next) {
-    const row = pick();
+    const row = pick('reviewer');
     if (row) startReview(next, row);
     else log('No reviewer agent available now; waiting.');
   }

@@ -119,13 +119,13 @@ test('an agent missing from the table never launches', () => {
   assert.deepEqual(unknown.runs(), []);
 });
 
-test('an agents table in the old stage format is refused at start', () => {
+test('an agents line whose stage is not worker or reviewer is refused at start', () => {
   const f = fixture();
   const old = join(f.cwd, 'old-agents');
-  writeFileSync(old, "ralph|claude|opus|-|echo pong\n");
+  writeFileSync(old, "# comment\n\nworker|codex|m|-|echo pong\nralph|claude|opus|-|echo pong\n");
   const result = f.run({ RALPH_AGENTS: old });
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /old stage\|agent\|model\|effort\|probe format/);
+  assert.match(result.stderr, /old-agents line 4: the stage must be worker or reviewer/);
   assert.deepEqual(f.runs(), []);
 });
 
@@ -176,7 +176,7 @@ test('a parentless blocker of an epic task moves under the epic and runs; one in
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(f.read('updates'), ['update TreeTutor-bug --parent TreeTutor-7t3']);
   assert.match(result.stdout, /Moved TreeTutor-bug under TreeTutor-7t3/);
-  assert.deepEqual(f.runs(), ['run --headless --epic TreeTutor-7t3 --iterations 1 --agent claude --model opus']);
+  assert.deepEqual(f.runs(), ['run --headless --epic TreeTutor-7t3 --iterations 1 --agent claude --model sonnet']);
 });
 
 test('ralph with no epic takes the first ready epic from Beads', () => {

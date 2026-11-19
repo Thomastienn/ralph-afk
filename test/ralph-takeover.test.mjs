@@ -102,7 +102,7 @@ test('a named agent gets its model: RALPH_<NAME>_MODEL, else the agents table, u
   assert.equal(result.code, 0, result.output);
   assert.deepEqual(f.started().args, ['run', '--headless', '--epic', 'TreeTutor-7t3', '--agent', 'codex', '--iterations', '3', '--model', 'fixture-model']);
   await f.run('ralph', '--agent', 'claude');
-  assert.deepEqual(f.started().args.slice(-2), ['--model', 'opus']);
+  assert.deepEqual(f.started().args.slice(-2), ['--model', 'sonnet']);
   await f.run('ralph', '--agent', 'codex', '--model', 'mine');
   assert.deepEqual(f.started().args.slice(-4), ['--agent', 'codex', '--model', 'mine']);
 });

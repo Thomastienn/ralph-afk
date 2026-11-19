@@ -13,14 +13,12 @@ flock -n 9 || { echo 'ralph-afk is already running in this checkout.' >&2; exit 
 # Each owner keeps their own agents table out of Git; RALPH_AGENTS points elsewhere (the tests use the example).
 agents="${RALPH_AGENTS:-$here/../agents}"
 [[ -f "$agents" ]] || { echo "Missing $agents: cp $(readlink -f -- "$here/../agents.example") $agents, then edit it." >&2; exit 1; }
-# shortcut: catches only the old stage names; drop once no stage|agent|... table is left.
-if awk -F'|' '$1 ~ /^(ralph|worker|reviewer)$/ { found = 1 } END { exit !found }' "$agents"; then
-  echo "$agents uses the old stage|agent|model|effort|probe format: drop the stage column, one line per agent (see agents.example)." >&2
-  exit 1
-fi
+# Every line starts with worker or reviewer; this also catches the retired ralph stage.
+bad="$(awk -F'|' '!/^[[:space:]]*(#|$)/ && $1 != "worker" && $1 != "reviewer" { print NR; exit }' "$agents")"
+[[ -z "$bad" ]] || { echo "$agents line $bad: the stage must be worker or reviewer (see agents.example)." >&2; exit 1; }
 usage='Usage: ralph-afk [-a agent,agent] [epic...] | ralph-afk [-a agent,agent] --pr [workers]'
 # -a limits this run to agents from the agents table.
-mapfile -t known < <(awk -F'|' '!/^[[:space:]]*#/ && NF > 3 { print $1 }' "$agents")
+mapfile -t known < <(awk -F'|' '$1 == "worker" && NF > 4 { print $2 }' "$agents")
 only=()
 pr=false
 given=()
@@ -95,7 +93,7 @@ agents_now() {
 declare -A resets=()
 usable() {
   local probe reply err ok=1
-  probe="$(awk -F'|' -v agent="$1" '$1 == agent { sub(/^([^|]*[|]){3}/, ""); print; exit }' "$agents")"
+  probe="$(awk -F'|' -v agent="$1" '$1 == "worker" && $2 == agent { sub(/^([^|]*[|]){4}/, ""); print; exit }' "$agents")"
   if [[ -z "$probe" ]]; then
     echo "Unknown agent in RALPH_AFK_SCHEDULE: $1 (add it to $(readlink -f -- "$agents"))" >&2
     return 1
