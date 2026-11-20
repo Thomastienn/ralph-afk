@@ -110,7 +110,8 @@ export function startTui(state, interrupt) {
     const view = state();
     if (focus && !view.jobs.includes(focus)) { focus = null; scroll = 0; } // its agent finished
     const lines = render({ ...view, focus, scroll, now: Date.now(), color: !process.env.NO_COLOR }, stdout.columns, stdout.rows);
-    stdout.write(`\x1b[H${lines.join('\x1b[K\n')}\x1b[K\x1b[J`);
+    // Clear each line before writing it: erasing after a full-width line would also erase its last character.
+    stdout.write(`\x1b[H${lines.map(line => `\x1b[2K${line}`).join('\n')}${lines.length < stdout.rows ? '\n\x1b[J' : ''}`);
   };
   const keys = data => {
     const key = data.toString();
