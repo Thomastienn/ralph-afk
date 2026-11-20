@@ -4,6 +4,8 @@ Unattended runners for [Ralph](https://github.com/subsy/ralph-tui) on a
 [Beads](https://github.com/steveyegge/beads) backlog. When one agent runs out
 of usage, they switch to another and wait for limits to reset.
 
+![ralph-afk --pr dashboard: three agents at work, their PRs and the log](docs/ralph-pr.png)
+
 | Command | What it does |
 | --- | --- |
 | `ralph` | One headless Ralph run on one epic. |
