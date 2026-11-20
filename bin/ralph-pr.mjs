@@ -144,14 +144,18 @@ function claudeSteps(text, job) {
     return `error: ${firstLine(Array.isArray(part.content) ? part.content.map(piece => piece.text ?? '').join('\n') : part.content)}`;
   });
 }
+// The complete lines added to file since the last look; job[key] keeps the place.
+function newLines(job, key, file) {
+  const fresh = readFileSync(file).subarray(job[key] ?? 0);
+  const end = fresh.lastIndexOf('\n') + 1; // a line still being written waits for the next look
+  job[key] = (job[key] ?? 0) + end;
+  return fresh.subarray(0, end).toString('utf8').split('\n');
+}
 function progress(job) {
   job.file ??= job.agent === 'claude' ? transcript(job) : join(logs, `${job.name}.log`);
   if (!job.file || !existsSync(job.file)) return;
-  const fresh = readFileSync(job.file).subarray(job.offset);
-  const end = fresh.lastIndexOf('\n') + 1; // a line still being written waits for the next look
-  job.offset += end;
   // shortcut: Codex lines are printed raw, its echoed prompt and command output included; parse its session file if that is too noisy.
-  for (const text of fresh.subarray(0, end).toString('utf8').split('\n')) {
+  for (const text of newLines(job, 'offset', job.file)) {
     for (const step of job.agent === 'claude' ? claudeSteps(text, job) : [text.trim()]) {
       if (!step) continue;
       job.last = step;
@@ -160,7 +164,27 @@ function progress(job) {
     }
   }
 }
-setInterval(() => { for (const job of running) progress(job); screen?.draw(); }, 2000).unref();
+// Codex logs no token counts, but its session file under sessions/YYYY/MM/DD does; the first line names the working directory.
+const codexSessions = join(env.CODEX_HOME || join(homedir(), '.codex'), 'sessions');
+function codexSession(job) {
+  const day = time => { const d = new Date(time); return join(codexSessions, String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')); };
+  const cwdOf = file => { try { return JSON.parse(readFileSync(file, 'utf8').split('\n', 1)[0]).payload?.cwd; } catch { return null; } };
+  return [...new Set([day(job.started), day(Date.now())])].filter(dir => existsSync(dir))
+    .flatMap(dir => readdirSync(dir).filter(name => name.endsWith('.jsonl')).map(name => join(dir, name)))
+    .map(file => ({ file, time: statSync(file).mtimeMs })).filter(entry => entry.time >= job.started)
+    .sort((a, b) => b.time - a.time).find(entry => cwdOf(entry.file) === job.cwd)?.file ?? null;
+}
+function codexContext(job) {
+  if (job.agent !== 'codex') return;
+  job.session ??= codexSession(job);
+  if (!job.session) return;
+  for (const text of newLines(job, 'sessionOffset', job.session)) {
+    if (!text.includes('"token_count"')) continue;
+    // input_tokens already counts the cached ones.
+    try { job.context = JSON.parse(text).payload?.info?.last_token_usage?.input_tokens ?? job.context; } catch {}
+  }
+}
+setInterval(() => { for (const job of running) { progress(job); codexContext(job); } screen?.draw(); }, 2000).unref();
 
 // Kept on disk, so a restart does not give a failing task TRIES more runs.
 const triesFile = join(logs, 'tries.json');

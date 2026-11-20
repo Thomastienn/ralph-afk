@@ -7,7 +7,7 @@ const jobs = [
   { slot: 1, stage: 'worker', Task: 'rt-12', Title: 'Add CSV export to reports page', agent: 'claude', model: 'opus', effort: 'high', context: 87400, started: ago(14),
     file: '/home/me/app/.ralph-tui/logs/rt-12.jsonl',
     steps: ['Read: src/reports/page.tsx', 'Grep: exportRows', 'Edit: src/reports/export.ts', 'Bash: npm test -- reports', 'Bash: git push -u origin ralph/rt-12'] },
-  { slot: 2, stage: 'reviewer', PR: '#41', Task: 'rt-9', Title: 'Rate-limit login endpoint', agent: 'codex', model: 'gpt-5', effort: 'medium', started: ago(6),
+  { slot: 2, stage: 'reviewer', PR: '#41', Task: 'rt-9', Title: 'Rate-limit login endpoint', agent: 'codex', model: 'gpt-5', effort: 'medium', context: 52800, started: ago(6),
     file: '/home/me/app/.ralph-tui/logs/rt-9-review.jsonl',
     steps: ['Bash: gh pr diff 41', 'Read: src/auth/limit.ts', 'error: test auth/limit.test.ts failed (expected 429, got 200)', 'Edit: src/auth/limit.ts', 'Bash: npm test -- auth'] },
   { slot: 3, stage: 'worker', Task: 'rt-15', Title: 'Fix timezone bug in invoice dates', agent: 'claude', model: 'sonnet', effort: 'high', context: 31200, started: ago(2),

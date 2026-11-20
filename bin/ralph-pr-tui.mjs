@@ -4,7 +4,7 @@
 // Agent output may hold tabs or escape codes; they would break the layout.
 const clean = text => String(text).replace(/[\x00-\x1f\x7f]/g, ' ');
 const minutes = ms => `${Math.floor(ms / 60000)}m`;
-// effort is null when the CLI default applies; context (tokens) is known only for Claude, after its first reply.
+// effort is null when the CLI default applies; context (tokens) is known after the agent's first reply.
 export const agentLabel = job => [job.agent, job.model, job.effort, job.context && `${Math.round(job.context / 1000)}k ctx`].filter(Boolean).join(' ');
 const STEPS = 5; // steps per panel in the overview
 const bodyRows = rows => Math.max(1, rows - 4); // detail view: everything but its title bar, path line, rule and key line

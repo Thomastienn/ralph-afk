@@ -83,6 +83,12 @@ if [[ ${name} == claude ]]; then
   printf '%s\\n' '{"type":"assistant","message":{"usage":{"input_tokens":1000,"cache_read_input_tokens":1500,"cache_creation_input_tokens":500},"content":[{"type":"tool_use","name":"Bash","input":{"description":"Run tests"}}]}}' \
     '{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"content":"boom"}]}}' > "$d/$$.jsonl"
 fi
+# A Codex session file, as the real CLI keeps one per run under its dated sessions folder.
+if [[ ${name} == codex ]]; then
+  d="$CODEX_HOME/sessions/$(date +%Y/%m/%d)"; mkdir -p "$d"
+  printf '%s\\n' "{\\"type\\":\\"session_meta\\",\\"payload\\":{\\"cwd\\":\\"$(pwd)\\"}}" \
+    '{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":5200,"cached_input_tokens":5000}}}}' > "$d/rollout-$$.jsonl"
+fi
 if [[ $prompt == *'PR: #'* ]]; then
   [[ ! -e "$FIX/reviewing" ]] || echo overlap >> "$FIX/overlap"
   touch "$FIX/reviewing"; /usr/bin/sleep 0.2
@@ -133,7 +139,7 @@ function fixture(issues) {
   const read = name => existsSync(join(fix, name)) ? readFileSync(join(fix, name), 'utf8').trim().split('\n') : [];
   const script = fileURLToPath(new URL('../bin/ralph-afk', import.meta.url));
   const options = env => ({
-    cwd, env: { ...process.env, ...identity, FIX: fix, PATH: `${fix}/bin:${process.env.PATH}`, RALPH_PR_POLL: '0.05', RALPH_AFK_WAIT: '0', CLAUDE_CONFIG_DIR: join(fix, 'claude'), RALPH_AGENTS: fileURLToPath(new URL('../agents.example', import.meta.url)), ...env },
+    cwd, env: { ...process.env, ...identity, FIX: fix, PATH: `${fix}/bin:${process.env.PATH}`, RALPH_PR_POLL: '0.05', RALPH_AFK_WAIT: '0', CLAUDE_CONFIG_DIR: join(fix, 'claude'), CODEX_HOME: join(fix, 'codex'), RALPH_AGENTS: fileURLToPath(new URL('../agents.example', import.meta.url)), ...env },
   });
   // --pr runs until Ctrl+C: send it once stop(stdout so far) holds, by default when it reports being out of work.
   const run = (env = {}, args = [], stop = out => /Out of work/.test(out), signal = 'SIGINT') => new Promise(resolve => {
@@ -222,6 +228,13 @@ test('a new-ui ticket without a Mockup line is skipped with a reminder; one with
   assert.deepEqual(f.claims(), ['update E1.2 --claim']);
   assert.equal(f.issue('E1.1').status, 'open');
   assert.equal(f.issue('E1.2').status, 'closed');
+});
+
+test('a running Codex agent shows its context size from its session file', async () => {
+  const f = fixture([epic('E1'), task('E1.1', 'E1')]);
+  // Steps and context are read every 2s, so the worker must outlive one read.
+  const result = await f.run({ FIXTURE_LIMITED: 'claude', FIXTURE_WORKER_SLEEP: '3', RALPH_PR_POLL: '0.5' }, [], out => /\(codex gpt-6\.2-sol medium 5k ctx, 0m\)/.test(out), 'SIGKILL');
+  assert.match(result.stdout, / {2}worker E1\.1 \(codex gpt-6\.2-sol medium 5k ctx, 0m\): /);
 });
 
 test('with Claude out of usage a Codex worker takes the task; the reviewer waits for Claude', async () => {
