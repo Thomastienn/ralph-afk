@@ -4,18 +4,18 @@ import { render } from '../bin/ralph-pr-tui.mjs';
 const now = new Date('2026-11-19T14:32:10').getTime();
 const ago = m => now - m * 60000;
 const jobs = [
-  { slot: 1, stage: 'worker', Task: 'rt-12', Title: 'Add CSV export to reports page', agent: 'claude', model: 'opus', started: ago(14),
+  { slot: 1, stage: 'worker', Task: 'rt-12', Title: 'Add CSV export to reports page', agent: 'claude', model: 'opus', effort: 'high', context: 87400, started: ago(14),
     file: '/home/me/app/.ralph-tui/logs/rt-12.jsonl',
     steps: ['Read: src/reports/page.tsx', 'Grep: exportRows', 'Edit: src/reports/export.ts', 'Bash: npm test -- reports', 'Bash: git push -u origin ralph/rt-12'] },
-  { slot: 2, stage: 'reviewer', PR: '#41', Task: 'rt-9', Title: 'Rate-limit login endpoint', agent: 'codex', model: 'gpt-5', started: ago(6),
+  { slot: 2, stage: 'reviewer', PR: '#41', Task: 'rt-9', Title: 'Rate-limit login endpoint', agent: 'codex', model: 'gpt-5', effort: 'medium', started: ago(6),
     file: '/home/me/app/.ralph-tui/logs/rt-9-review.jsonl',
     steps: ['Bash: gh pr diff 41', 'Read: src/auth/limit.ts', 'error: test auth/limit.test.ts failed (expected 429, got 200)', 'Edit: src/auth/limit.ts', 'Bash: npm test -- auth'] },
-  { slot: 3, stage: 'worker', Task: 'rt-15', Title: 'Fix timezone bug in invoice dates', agent: 'claude', model: 'sonnet', started: ago(2),
+  { slot: 3, stage: 'worker', Task: 'rt-15', Title: 'Fix timezone bug in invoice dates', agent: 'claude', model: 'sonnet', effort: 'high', context: 31200, started: ago(2),
     file: '/home/me/app/.ralph-tui/logs/rt-15.jsonl', steps: ['Read: src/invoice/date.ts', 'Grep: toLocaleDateString'] },
 ];
 const prs = ['PR #41 rt-9: CI failed, reviewer running', 'PR #43 rt-11: CI passed', 'PR #44 rt-10: CI running', 'PR #38 rt-7 [needs-human]: CI failed'];
-const logs = ['14:18:02 Started worker 1 on rt-12 (claude opus).', '14:24:40 Merged PR #40 (rt-8).', '14:26:11 Started reviewer 2 on PR #41 (codex gpt-5).',
-  '14:28:57 PR #38: claude exited with 1 without merging.', '14:30:03 Started worker 3 on rt-15 (claude sonnet).'];
+const logs = ['14:18:02 Started worker 1 on rt-12 (claude opus high).', '14:24:40 Merged PR #40 (rt-8).', '14:26:11 Started reviewer 2 on PR #41 (codex gpt-5 medium).',
+  '14:28:57 PR #38: claude exited with 1 without merging.', '14:30:03 Started worker 3 on rt-15 (claude sonnet high).'];
 const [cols, rows] = [100, 30];
 const view = { header: ['master', '3/3 agents', '12 tasks left'], jobs, prs, logs, now };
 const lines = render(process.argv[2] === 'focus' ? { ...view, focus: jobs[1] } : view, cols, rows);
