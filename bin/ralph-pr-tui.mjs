@@ -4,6 +4,8 @@
 // Agent output may hold tabs or escape codes; they would break the layout.
 const clean = text => String(text).replace(/[\x00-\x1f\x7f]/g, ' ');
 const minutes = ms => `${Math.floor(ms / 60000)}m`;
+// effort is null when the CLI default applies; context (tokens) is known only for Claude, after its first reply.
+export const agentLabel = job => [job.agent, job.model, job.effort, job.context && `${Math.round(job.context / 1000)}k ctx`].filter(Boolean).join(' ');
 const STEPS = 5; // steps per panel in the overview
 const bodyRows = rows => Math.max(1, rows - 4); // detail view: everything but its title bar, path line, rule and key line
 // SGR codes from the terminal's own 16 colours, so light and dark themes both keep their contrast.
@@ -12,7 +14,7 @@ const STATE = { 'CI passed': '32', 'CI failed': '31', 'CI running': '33', 'no CI
 const tone = text => /fail|could not|exited|needs a human|needs-human|not usable/i.test(text) ? '31' : /^Merged|passed/.test(text) ? '32' : '';
 
 // view: { header, stopping, jobs, prs, logs, focus, scroll, now, color }; header is a list of fields;
-// jobs carry slot, stage, Task, Title, PR, agent, model, started, steps, file.
+// jobs carry slot, stage, Task, Title, PR, agent, model, effort, context, started, steps, file.
 // Returns the screen as at most rows lines, each at most cols characters wide.
 export function render({ header, stopping, jobs, prs, logs, focus, scroll = 0, now, color = true }, cols, rows) {
   // A line is a list of [text, SGR style] parts, cut to the terminal width before it is styled.
@@ -32,7 +34,7 @@ export function render({ header, stopping, jobs, prs, logs, focus, scroll = 0, n
   const keys = pairs => pairs.flatMap(([key, what]) => [[` ${key} `, '7'], [` ${what}  `, '2']]);
   const tint = job => STAGE[job.stage] ?? '';
   const what = job => `${job.PR ? `${job.PR} ` : ''}${job.Task}`;
-  const who = job => `${job.agent} ${job.model} · ${minutes(now - job.started)}`;
+  const who = job => `${agentLabel(job)} · ${minutes(now - job.started)}`;
   // Older steps are dim, so the newest one in each panel stands out.
   const step = (job, text, old) => {
     const gutter = [' │ ', tint(job)];

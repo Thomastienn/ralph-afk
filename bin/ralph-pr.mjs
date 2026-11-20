@@ -8,7 +8,7 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { probe } from './ralph-probe.mjs';
-import { startTui } from './ralph-pr-tui.mjs';
+import { agentLabel, startTui } from './ralph-pr-tui.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = process.cwd();
@@ -52,7 +52,7 @@ for (const [stage, file] of Object.entries(prompts)) {
 // Workers share the worker lines with ralph-afk.
 const table = readFileSync(agentsFile, 'utf8').split('\n')
   .filter(line => line.trim() && !line.trimStart().startsWith('#'))
-  .map(line => { const [stage, agent, model, effort] = line.split('|'); return { stage, agent, model, effort }; })
+  .map(line => { const [stage, agent, model, effort] = line.split('|'); return { stage, agent, model, effort: effort && effort !== '-' ? effort : null }; })
   .filter(row => !only.length || only.includes(row.agent));
 for (const stage of Object.keys(prompts)) {
   if (!table.some(row => row.stage === stage)) fail(`No ${stage} line in ${agentsFile}${only.length ? ` for -a ${only.join(',')}` : ''}.`);
@@ -84,7 +84,7 @@ const down = agent => probed.set(agent, { ok: false, until: Date.now() + waitMs 
 
 const commonGit = run('git', ['rev-parse', '--path-format=absolute', '--git-common-dir']);
 function command(row, prompt) {
-  const effort = row.effort && row.effort !== '-' ? row.effort : null;
+  const { effort } = row;
   if (row.agent === 'claude') {
     return ['claude', ['-p', '--permission-mode', 'auto', '--model', row.model, ...(effort ? ['--effort', effort] : []), prompt]];
   }
@@ -107,13 +107,13 @@ function launch(row, stage, name, cwd, facts) {
   closeSync(out);
   let slot = 1; // a panel keeps its number while its agent runs
   while ([...running].some(job => job.slot === slot)) slot++;
-  const job = { slot, steps: [], stage, name, agent: row.agent, model: row.model, cwd, offset: 0, started: Date.now(), child, ...Object.fromEntries(facts.map(fact => [fact.slice(0, fact.indexOf(': ')), fact.slice(fact.indexOf(': ') + 2)])) };
+  const job = { slot, steps: [], stage, name, agent: row.agent, model: row.model, effort: row.effort, cwd, offset: 0, started: Date.now(), child, ...Object.fromEntries(facts.map(fact => [fact.slice(0, fact.indexOf(': ')), fact.slice(fact.indexOf(': ') + 2)])) };
   job.done = new Promise(resolve => {
     child.on('exit', code => resolve((job.code = code ?? 1)));
     child.on('error', error => { log(`Could not start ${bin}: ${error.message}`); resolve((job.code = 127)); });
   });
   running.add(job);
-  log(`Started ${row.agent} ${row.model} as ${stage} for ${name}; log: .ralph-tui/pr-logs/${name}.log`);
+  log(`Started ${agentLabel(row)} as ${stage} for ${name}; log: .ralph-tui/pr-logs/${name}.log`);
   return job;
 }
 
@@ -129,9 +129,12 @@ function transcript(job) {
     .sort((a, b) => b.time - a.time)[0]?.file ?? null;
 }
 const firstLine = text => String(text ?? '').trim().split('\n')[0];
-function claudeSteps(text) {
+function claudeSteps(text, job) {
   let entry;
   try { entry = JSON.parse(text); } catch { return []; }
+  // Context size is the prompt the last reply was sent with: fresh, cached and newly cached tokens.
+  const usage = entry.type === 'assistant' && entry.message?.usage;
+  if (usage) job.context = (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
   const content = Array.isArray(entry.message?.content) ? entry.message.content : [];
   return content.map(part => {
     const input = part.input ?? {};
@@ -149,7 +152,7 @@ function progress(job) {
   job.offset += end;
   // shortcut: Codex lines are printed raw, its echoed prompt and command output included; parse its session file if that is too noisy.
   for (const text of fresh.subarray(0, end).toString('utf8').split('\n')) {
-    for (const step of job.agent === 'claude' ? claudeSteps(text) : [text.trim()]) {
+    for (const step of job.agent === 'claude' ? claudeSteps(text, job) : [text.trim()]) {
       if (!step) continue;
       job.last = step;
       if (job.steps.push(step) > 1000) job.steps.shift();
@@ -381,7 +384,7 @@ const minutes = start => `${Math.floor((Date.now() - start) / 60000)}m`;
 function status(prs, waiting) {
   const jobs = [...running];
   log(`Status: ${jobs.filter(job => job.stage === 'worker').length} of ${slots} workers busy, reviewer ${jobs.some(job => job.stage === 'reviewer') ? 'busy' : 'free'}; ${waiting} ready tasks waiting; ${merges} merged this run.`);
-  for (const job of jobs) console.log(`  ${job.stage} ${job.name} (${job.agent} ${job.model}, ${minutes(job.started)}): ${job.last ?? 'starting'}`.slice(0, 240));
+  for (const job of jobs) console.log(`  ${job.stage} ${job.name} (${agentLabel(job)}, ${minutes(job.started)}): ${job.last ?? 'starting'}`.slice(0, 240));
   for (const pr of prs) console.log(`  ${prState(pr, jobs)}`);
 }
 function prState(pr, jobs) {

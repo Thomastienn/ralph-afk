@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { render } from '../bin/ralph-pr-tui.mjs';
 
 const now = Date.now();
-const job = (slot, steps, extra = {}) => ({ slot, stage: 'worker', Task: `T-${slot}`, Title: `Task ${slot}`, agent: 'claude', model: 'opus', started: now - 12 * 60000, steps, ...extra });
+const job = (slot, steps, extra = {}) => ({ slot, stage: 'worker', Task: `T-${slot}`, Title: `Task ${slot}`, agent: 'claude', model: 'opus', effort: 'high', started: now - 12 * 60000, steps, ...extra });
 const steps = n => Array.from({ length: n }, (_, i) => `step ${i + 1}`);
 const view = extra => ({ header: ['master'], jobs: [], prs: [], logs: [], now, ...extra });
 const plain = line => line.replace(/\x1b\[[0-9;]*m/g, '');
@@ -11,17 +11,17 @@ const screen = (...args) => render(...args).map(plain);
 
 test('the overview shows each agent with its last 5 steps, then PRs, log and keys, never wider than the terminal', () => {
   const lines = render(view({
-    jobs: [job(1, steps(8)), job(2, [], { stage: 'reviewer', PR: '#42' })],
+    jobs: [job(1, steps(8), { context: 84321 }), job(2, [], { stage: 'reviewer', PR: '#42' })],
     prs: ['PR #42 T-2: CI passed, reviewer running'],
     logs: ['14:00:00 one', '14:00:01 two'],
   }), 80, 30);
   const text = lines.map(plain);
   assert.equal(text.length, 16); // the rest of the screen is cleared, not padded
   assert.match(text[0], /^ ralph-pr {2}· {2}master +\d\d:\d\d:\d\d $/);
-  assert.match(text[2], /^ 1 {2}worker {2}T-1 {2}Task 1 ─+ claude opus · 12m$/);
+  assert.match(text[2], /^ 1 {2}worker {2}T-1 {2}Task 1 ─+ claude opus high 84k ctx · 12m$/);
   assert.deepEqual(text.slice(3, 8), [' │ step 4', ' │ step 5', ' │ step 6', ' │ step 7', ' │ step 8']);
   assert.equal(text[8], ''); // room to spare: a blank line between panels
-  assert.match(text[9], /^ 2 {2}reviewer {2}#42 T-2 {2}Task 2 ─+ claude opus · 12m$/);
+  assert.match(text[9], /^ 2 {2}reviewer {2}#42 T-2 {2}Task 2 ─+ claude opus high · 12m$/);
   assert.equal(text[10], ' │ starting');
   assert.equal(text[12], ' PRs  #42 T-2: CI passed, reviewer running');
   assert.deepEqual(text.slice(13, 15), [' Log  14:00:00 one', '      14:00:01 two']);
@@ -80,7 +80,7 @@ test('the detail view fills the screen with the newest steps and scrolls back', 
   const focus = job(2, steps(100), { file: '/logs/T-2.log' });
   const lines = screen(view({ jobs: [focus], focus }), 80, 24);
   assert.equal(lines.length, 24);
-  assert.match(lines[0], /^ 2 {2}worker {2}T-2 {2}Task 2 +claude opus · 12m $/);
+  assert.match(lines[0], /^ 2 {2}worker {2}T-2 {2}Task 2 +claude opus high · 12m $/);
   assert.equal(lines[1], ' /logs/T-2.log');
   assert.equal(lines[2], ' │ step 81');
   assert.equal(lines[21], ' │ step 100');

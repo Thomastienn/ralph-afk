@@ -80,7 +80,7 @@ printf '%s\\n' "$prompt" >> "$FIX/prompts"
 # A Claude session transcript, as the real CLI keeps one per working directory.
 if [[ ${name} == claude ]]; then
   d="$CLAUDE_CONFIG_DIR/projects/$(pwd | sed 's/[^a-zA-Z0-9]/-/g')"; mkdir -p "$d"
-  printf '%s\\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"description":"Run tests"}}]}}' \
+  printf '%s\\n' '{"type":"assistant","message":{"usage":{"input_tokens":1000,"cache_read_input_tokens":1500,"cache_creation_input_tokens":500},"content":[{"type":"tool_use","name":"Bash","input":{"description":"Run tests"}}]}}' \
     '{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"content":"boom"}]}}' > "$d/$$.jsonl"
 fi
 if [[ $prompt == *'PR: #'* ]]; then
@@ -173,7 +173,7 @@ test('workers open one PR per task, oldest epic first; one reviewer at a time me
   // The fake reviewer reads the task line too, so match the reviewer's model instead.
   assert.equal(agents.filter(line => line.endsWith('-p --permission-mode auto --model opus --effort high')).length, 3, agents.join('\n'));
   assert.match(result.stdout, /Out of work\. Checking for new tasks every 0\.05s/);
-  assert.match(result.stdout, /Status: \d of 2 workers busy, reviewer (busy|free); \d ready tasks waiting; \d merged this run\.\n {2}worker E\d\.\d \(claude sonnet, 0m\): /);
+  assert.match(result.stdout, /Status: \d of 2 workers busy, reviewer (busy|free); \d ready tasks waiting; \d merged this run\.\n {2}worker E\d\.\d \(claude sonnet high( 3k ctx)?, 0m\): /);
   assert.match(result.stdout, /\n {2}PR #1 E1\.1( \[in-review\])?: CI passed/);
   for (const id of ['E1.1', 'E1.2', 'E2.1', 'review-1']) {
     assert.match(result.stdout, new RegExp(`\\] ${id}: Bash: Run tests\\n.*\\] ${id}: error: boom\\n`), id);

@@ -215,7 +215,8 @@ whose checks all passed. Needs `.ralph-tui/pr-worker.md` and
   Codex steps are the lines Codex writes to its log.
 - In a terminal, a dashboard fills the screen. The header shows busy workers,
   the reviewer, ready tasks and merges. Below it is one numbered panel per
-  running agent: its task or PR, model, minutes so far and last 5 steps. At
+  running agent: its task or PR, model, effort, context size
+  (Claude only), minutes so far and last 5 steps. At
   the bottom are the open PRs with their labels and CI state, then the
   supervisor log. A panel keeps its number while its agent runs.
   - Colour marks state: workers cyan, the reviewer magenta, errors and
@@ -230,7 +231,8 @@ whose checks all passed. Needs `.ralph-tui/pr-worker.md` and
 - Not in a terminal (stdout or stdin redirected, e.g. `nohup` or `> file`),
   it prints a plain log instead. Each step is one line, prefixed with its task
   or `review-<PR>`. While busy, a status block prints every `RALPH_PR_POLL`
-  seconds: each running agent with its model, minutes so far and last step,
+  seconds: each running agent with its model, effort, context size,
+  minutes so far and last step,
   then each open PR with its labels, CI state and the agent on it.
 - Task order: parentless tasks first, then by epic age. Skips tasks labelled
   `gate:backlog`, `in-review` or `needs-human`. A `new-ui` task waits for a
