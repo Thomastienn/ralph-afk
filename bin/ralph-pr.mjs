@@ -2,12 +2,13 @@
 // branch, opens a PR and waits for CI; one reviewer at a time reviews, fixes and squash-merges green PRs.
 // ralph-afk holds the checkout lock and starts this from the repository root. See docs/ralph.md.
 import { execFileSync, spawn } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { probe } from './ralph-probe.mjs';
+import { startTui } from './ralph-pr-tui.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = process.cwd();
@@ -25,7 +26,15 @@ const logs = join(root, '.ralph-tui/pr-logs');
 const agentsFile = env.RALPH_AGENTS || (existsSync('.ralph-tui/agents') ? '.ralph-tui/agents' : join(here, '../agents')); // ralph-afk checked it exists
 const prompts = { worker: '.ralph-tui/pr-worker.md', reviewer: '.ralph-tui/pr-reviewer.md' };
 
-const log = message => console.log(`[ralph-pr ${new Date().toLocaleString('sv')}] ${message}`);
+let screen = null; // the dashboard, while stdin and stdout are a terminal
+const events = []; // the dashboard's log lines
+const log = message => {
+  const line = `[ralph-pr ${new Date().toLocaleString('sv')}] ${message}`;
+  if (!screen) return console.log(line);
+  appendFileSync(join(logs, 'ralph-pr.log'), `${line}\n`);
+  if (events.push(`${new Date().toLocaleTimeString('sv')} ${message}`) > 200) events.shift();
+  screen.draw();
+};
 const run = (command, args, options = {}) =>
   execFileSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...options }).trim();
 const attempt = (command, args, options) => {
@@ -96,7 +105,9 @@ function launch(row, stage, name, cwd, facts) {
   const watch = `(while kill -0 ${process.pid} 2>/dev/null; do sleep 2; done; kill -TERM 0) & w=$!; "$@"; s=$?; kill $w 2>/dev/null; exit $s`;
   const child = spawn('sh', ['-c', watch, 'sh', bin, ...args], { cwd, stdio: ['ignore', out, out], detached: true });
   closeSync(out);
-  const job = { stage, name, agent: row.agent, model: row.model, cwd, offset: 0, started: Date.now(), child, ...Object.fromEntries(facts.map(fact => [fact.slice(0, fact.indexOf(': ')), fact.slice(fact.indexOf(': ') + 2)])) };
+  let slot = 1; // a panel keeps its number while its agent runs
+  while ([...running].some(job => job.slot === slot)) slot++;
+  const job = { slot, steps: [], stage, name, agent: row.agent, model: row.model, cwd, offset: 0, started: Date.now(), child, ...Object.fromEntries(facts.map(fact => [fact.slice(0, fact.indexOf(': ')), fact.slice(fact.indexOf(': ') + 2)])) };
   job.done = new Promise(resolve => {
     child.on('exit', code => resolve((job.code = code ?? 1)));
     child.on('error', error => { log(`Could not start ${bin}: ${error.message}`); resolve((job.code = 127)); });
@@ -139,11 +150,14 @@ function progress(job) {
   // shortcut: Codex lines are printed raw, its echoed prompt and command output included; parse its session file if that is too noisy.
   for (const text of fresh.subarray(0, end).toString('utf8').split('\n')) {
     for (const step of job.agent === 'claude' ? claudeSteps(text) : [text.trim()]) {
-      if (step) log(`${job.name}: ${(job.last = step)}`.slice(0, 240));
+      if (!step) continue;
+      job.last = step;
+      if (job.steps.push(step) > 1000) job.steps.shift();
+      if (!screen) log(`${job.name}: ${step}`.slice(0, 240));
     }
   }
 }
-setInterval(() => { for (const job of running) progress(job); }, 2000).unref();
+setInterval(() => { for (const job of running) progress(job); screen?.draw(); }, 2000).unref();
 
 // Kept on disk, so a restart does not give a failing task TRIES more runs.
 const triesFile = join(logs, 'tries.json');
@@ -347,36 +361,50 @@ function createTask(title, description) {
 let stopping = false;
 const halt = new AbortController(); // Ctrl+C ends an idle wait at once
 const stopAll = () => { for (const job of running) try { process.kill(-job.child.pid, 'SIGTERM'); } catch {} };
-process.on('SIGINT', () => {
+function interrupt() {
   if (stopping) { stopAll(); process.exit(130); }
   stopping = true;
   halt.abort();
   log('Stopping after the running agents finish. Press Ctrl+C again to stop now.');
-});
+}
+process.on('SIGINT', interrupt);
 process.on('SIGTERM', () => { stopAll(); process.exit(143); });
 
 function listParked() {
   const parked = json('bd', ['list', '--label', 'needs-human', '--status', 'open,in_progress,blocked', '--json', '--limit', '0']) ?? [];
   if (!parked.length) return;
-  console.log('Waiting for a human:');
-  for (const task of parked) console.log(`  ${task.id} ${task.title}`);
+  const say = screen ? log : console.log;
+  say('Waiting for a human:');
+  for (const task of parked) say(`  ${task.id} ${task.title}`);
 }
 const minutes = start => `${Math.floor((Date.now() - start) / 60000)}m`;
 function status(prs, waiting) {
   const jobs = [...running];
   log(`Status: ${jobs.filter(job => job.stage === 'worker').length} of ${slots} workers busy, reviewer ${jobs.some(job => job.stage === 'reviewer') ? 'busy' : 'free'}; ${waiting} ready tasks waiting; ${merges} merged this run.`);
   for (const job of jobs) console.log(`  ${job.stage} ${job.name} (${job.agent} ${job.model}, ${minutes(job.started)}): ${job.last ?? 'starting'}`.slice(0, 240));
-  for (const pr of prs) {
-    const ci = !pr.statusCheckRollup?.length ? 'no CI yet' : !settled(pr) ? 'CI running' : passed(pr) ? 'CI passed' : 'CI failed';
-    const labels = (pr.task.labels ?? []).filter(label => ['in-review', 'needs-human'].includes(label));
-    const agent = jobs.find(job => job.Task === pr.task.id)?.stage;
-    console.log(`  PR #${pr.number} ${pr.task.id}${labels.length ? ` [${labels.join(', ')}]` : ''}: ${ci}${agent ? `, ${agent} running` : ''}`);
-  }
+  for (const pr of prs) console.log(`  ${prState(pr, jobs)}`);
+}
+function prState(pr, jobs) {
+  const ci = !pr.statusCheckRollup?.length ? 'no CI yet' : !settled(pr) ? 'CI running' : passed(pr) ? 'CI passed' : 'CI failed';
+  const labels = (pr.task.labels ?? []).filter(label => ['in-review', 'needs-human'].includes(label));
+  const agent = jobs.find(job => job.Task === pr.task.id)?.stage;
+  return `PR #${pr.number} ${pr.task.id}${labels.length ? ` [${labels.join(', ')}]` : ''}: ${ci}${agent ? `, ${agent} running` : ''}`;
+}
+function dashboard() {
+  const jobs = [...running].sort((a, b) => a.slot - b.slot);
+  const workers = jobs.filter(job => job.stage === 'worker').length;
+  const reviewer = jobs.some(job => job.stage === 'reviewer') ? 'busy' : 'free';
+  return {
+    header: `ralph-pr  ${base}  ${workers}/${slots} workers busy  reviewer ${reviewer}  ${latest.waiting} ready  ${merges} merged${idle ? '  out of work' : ''}${stopping ? '  stopping' : ''}`,
+    jobs, prs: latest.prs.map(pr => prState(pr, jobs)), logs: events,
+  };
 }
 
-log(`PR mode on ${base}: up to ${slots} workers, one reviewer.`);
 let idle = false;
 let shown = 0; // when the last status block printed
+let latest = { prs: [], waiting: 0 }; // the last check, for the dashboard
+if (process.stdin.isTTY && process.stdout.isTTY) screen = startTui(dashboard, interrupt);
+log(`PR mode on ${base}: up to ${slots} workers, one reviewer.`);
 // One pass over the queue; true once a requested stop has nothing left running.
 function poll() {
   const closed = JSON.parse(attempt('bd', ['epic', 'close-eligible', '--json']) ?? '{}').closed ?? [];
@@ -413,9 +441,11 @@ function poll() {
     listParked();
   }
   idle = nothing;
-  if (!idle && Date.now() - shown >= pollMs) {
+  latest = { prs: open, waiting: ready.filter(task => ![...running].some(job => job.Task === task.id)).length };
+  // The dashboard shows the same, live.
+  if (!screen && !idle && Date.now() - shown >= pollMs) {
     shown = Date.now();
-    status(open, ready.filter(task => ![...running].some(job => job.Task === task.id)).length);
+    status(open, latest.waiting);
   }
 }
 for (;;) {
@@ -434,6 +464,11 @@ for (;;) {
   }
 }
 
+if (screen) {
+  screen.stop();
+  screen = null;
+  log('Dashboard closed; its log is in .ralph-tui/pr-logs/ralph-pr.log.');
+}
 log('Stop requested. Stopping.');
 // Commit the export once here so the next start pushes it with the planning commits.
 commitBeads('chore(beads): export after ralph-afk --pr');

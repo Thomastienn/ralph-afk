@@ -13,6 +13,7 @@ Notes for coding agents working on this repository.
 
 - `bin/ralph`: one headless Ralph run on an epic.
 - `bin/ralph-afk`: unattended supervisor; `--pr` hands off to `bin/ralph-pr.mjs`.
+- `bin/ralph-pr-tui.mjs`: the `--pr` terminal dashboard.
 - `bin/ralph-probe.mjs`: built-in Claude and Codex usage probes.
 - `bin/ralph-takeover.mjs`: stops a running Ralph safely before a new one starts.
 - `ralph-tui/`: global ralph-tui config, tracker plugin and prompt template.
