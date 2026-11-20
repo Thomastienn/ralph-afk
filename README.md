@@ -216,6 +216,10 @@ whose checks all passed. Needs `.ralph-tui/pr-worker.md` and
   running agent: its task or PR, model, minutes so far and last 5 steps. At
   the bottom are the open PRs with their labels and CI state, then the
   supervisor log. A panel keeps its number while its agent runs.
+  - Colour marks state: workers cyan, the reviewer magenta, errors and
+    failures red, passed CI and merges green, running CI yellow. Older steps
+    are dim, so the newest stands out. The header turns yellow while
+    stopping. `NO_COLOR` turns colour off.
   - `1`-`9` opens that agent full screen with all its steps; `↑`/`↓`
     scroll, `Esc` goes back.
   - `q` or Ctrl+C stops, the same as Ctrl+C below.

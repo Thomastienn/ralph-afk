@@ -395,7 +395,9 @@ function dashboard() {
   const workers = jobs.filter(job => job.stage === 'worker').length;
   const reviewer = jobs.some(job => job.stage === 'reviewer') ? 'busy' : 'free';
   return {
-    header: `ralph-pr  ${base}  ${workers}/${slots} workers busy  reviewer ${reviewer}  ${latest.waiting} ready  ${merges} merged${idle ? '  out of work' : ''}${stopping ? '  stopping' : ''}`,
+    header: [base, `${workers}/${slots} workers busy`, `reviewer ${reviewer}`, `${latest.waiting} ready`, `${merges} merged`,
+      ...(idle ? ['out of work'] : []), ...(stopping ? ['stopping'] : [])],
+    stopping,
     jobs, prs: latest.prs.map(pr => prState(pr, jobs)), logs: events,
   };
 }
