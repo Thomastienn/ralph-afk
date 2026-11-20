@@ -18,18 +18,28 @@ const tone = text => /fail|could not|exited|needs a human|needs-human|not usable
 // Returns the screen as at most rows lines, each at most cols characters wide.
 export function render({ header, stopping, jobs, prs, logs, focus, scroll = 0, now, color = true }, cols, rows) {
   // A line is a list of [text, SGR style] parts, cut to the terminal width before it is styled.
-  const paint = parts => {
-    let room = cols;
-    let out = '';
-    for (const [text, style] of parts) {
-      const piece = clean(text).slice(0, room);
-      room -= piece.length;
-      out += style && color && piece ? `\x1b[${style}m${piece}\x1b[0m` : piece;
-    }
-    return out;
-  };
+  const cut = (parts, room) => parts.map(([text, style]) => {
+    const piece = clean(text).slice(0, Math.max(0, room));
+    room -= piece.length;
+    return [piece, style];
+  });
+  const paint = parts => cut(parts, cols).map(([piece, style]) => style && color && piece ? `\x1b[${style}m${piece}\x1b[0m` : piece).join('');
   const width = parts => parts.reduce((sum, [text]) => sum + clean(text).length, 0);
-  const bar = (left, right, style) => [[`${left}${' '.repeat(Math.max(1, cols - left.length - right.length))}${right}`, style]];
+  // The right end (clock, agent, minutes) always shows; the left is cut to make room for it.
+  const bar = (left, right, style) => {
+    const kept = clean(left).slice(0, Math.max(0, cols - right.length - 1));
+    return [[`${kept}${' '.repeat(Math.max(1, cols - kept.length - right.length))}${right}`, style]];
+  };
+  // Lays items (lists of parts) out on as many lines as they need: lead starts the first line, pad (as wide) the others.
+  const flow = (items, lead, pad, sep, first = cols) => {
+    const out = [];
+    let line = lead;
+    for (const item of items) {
+      if (width(line) > width(lead) && width(line) + width(sep) + width(item) > (out.length ? cols : first)) { out.push(line); line = pad; }
+      line = [...line, ...(width(line) > width(lead) ? sep : []), ...item];
+    }
+    return [...out, line];
+  };
   const rule = [['─'.repeat(cols), '2']];
   const keys = pairs => pairs.flatMap(([key, what]) => [[` ${key} `, '7'], [` ${what}  `, '2']]);
   const tint = job => STAGE[job.stage] ?? '';
@@ -54,37 +64,36 @@ export function render({ header, stopping, jobs, prs, logs, focus, scroll = 0, n
       ...Array(Math.max(0, body - Math.max(1, steps.length))).fill([]), rule,
       [...keys([['Esc', 'back'], ['↑↓', 'scroll'], ['1-9', 'switch agent']]), ...(scroll ? [[`${focus.steps.length - end} lines up`, '33']] : [])]];
   } else {
-    const room = rows - 2 - 6; // header and a blank line above; rule, PRs, at least 3 log lines and the key line below
+    const time = new Date(now).toLocaleTimeString('sv');
+    // Header fields that do not fit beside the clock go on more header lines.
+    const head = flow(['ralph-pr', ...header].map(field => [[field, '']]), [[' ', '']], [[' ', '']], [['  ·  ', '']], cols - time.length - 2)
+      .map((parts, i) => bar(parts.map(([text]) => text).join(''), i ? '' : `${time} `, stopping ? '7;33' : '7'));
+    // PRs flow onto as many lines as they need, but the newest 3 log lines and a line per panel stay on screen.
+    const marks = text => text.replace(/^PR /, '').split(/(CI passed|CI failed|CI running|no CI yet|needs-human)/).map(piece => [piece, STATE[piece] ?? '']);
+    const LOGS = 3;
+    const prLines = flow(prs.length ? prs.map(marks) : [[['none', '2']]], [[' PRs  ', '1']], [['      ', '']], [['   ', '']])
+      .slice(0, Math.max(1, rows - head.length - 3 - Math.max(1, jobs.length) - LOGS));
+    const room = rows - head.length - 3 - prLines.length - LOGS; // header and a blank line above; rule, PRs, log and the key line below
     const gap = room >= jobs.length * (STEPS + 2) - 1 ? 1 : 0; // a blank line between panels when everything fits
     const per = jobs.length ? Math.max(0, Math.min(STEPS, Math.floor((room - gap * (jobs.length - 1)) / jobs.length) - 1)) : 0;
     const panels = jobs.length ? jobs.flatMap((job, index) => {
-      const left = [[` ${job.slot} `, `7;${tint(job)}`], [` ${job.stage}  `, `1;${tint(job)}`], [`${what(job)}  `, '1']];
       const right = [[` ${who(job)}`, '2']];
-      const name = (job.Title ?? '').slice(0, Math.max(0, cols - width(left) - width(right) - 4));
+      const left = cut([[` ${job.slot} `, `7;${tint(job)}`], [` ${job.stage}  `, `1;${tint(job)}`], [`${what(job)}  `, '1'], [job.Title ?? '', '']], cols - width(right) - 4);
       const steps = job.steps.slice(-per).slice(0, per);
-      return [[...left, [name, ''], [` ${'─'.repeat(Math.max(1, cols - width(left) - name.length - width(right) - 1))}`, '2'], ...right],
+      return [[...left, [` ${'─'.repeat(Math.max(1, cols - width(left) - width(right) - 1))}`, '2'], ...right],
         ...(job.steps.length ? steps.map((text, i) => step(job, text, i < steps.length - 1)) : [[[' │ ', tint(job)], ['starting', '2']]]).slice(0, per),
         ...(gap && index < jobs.length - 1 ? [[]] : [])];
     }) : [[[' No agents running.', '2']]];
-    const time = new Date(now).toLocaleTimeString('sv');
-    const top = [bar(` ${['ralph-pr', ...header].join('  ·  ')}`, `${time} `, stopping ? '7;33' : '7'), [], ...panels].slice(0, Math.max(1, rows - 4));
-    // PRs flow onto as many lines as they need, leaving the rest to the log.
-    const marks = text => text.replace(/^PR /, '').split(/(CI passed|CI failed|CI running|no CI yet|needs-human)/).map(piece => [piece, STATE[piece] ?? '']);
-    const flow = [];
-    let line = [[' PRs  ', '1']];
-    for (const item of prs.map(marks)) {
-      if (width(line) > 6 && width(line) + 3 + width(item) > cols) { flow.push(line); line = [['      ', '']]; }
-      line = [...line, ...(width(line) > 6 ? [['   ', '']] : []), ...item];
-    }
-    flow.push(prs.length ? line : [...line, ['none', '2']]);
-    const prLines = flow.slice(0, Math.max(1, rows - top.length - 2));
+    const top = [...head, [], ...panels].slice(0, Math.max(1, rows - 2 - prLines.length - LOGS));
     const n = rows - top.length - 2 - prLines.length;
-    const shown = n > 0 ? logs.slice(-n) : []; // slice(-0) would be every line
-    lines = [...top, rule, ...prLines,
-      ...shown.map((line, i) => {
-        const cut = line.indexOf(' ');
-        return [[i ? '      ' : ' Log  ', '1'], [line.slice(0, cut + 1), '2'], [line.slice(cut + 1), tone(line.slice(cut + 1))]];
-      }),
+    // A log line too long for the terminal wraps at a space, its rest indented under the message.
+    const wrapped = (n > 0 ? logs.slice(-n) : []).flatMap(line => { // slice(-0) would be every line
+      const time = line.slice(0, line.indexOf(' ') + 1);
+      const text = clean(line.slice(time.length));
+      const w = Math.max(1, cols - 6 - time.length);
+      return (text.match(new RegExp(`\\S.{0,${w - 1}}(?= |$)|\\S.{0,${w - 1}}`, 'g')) ?? ['']).map((piece, i) => [[i ? ' '.repeat(time.length) : time, '2'], [piece, tone(text)]]);
+    }).slice(-n);
+    lines = [...top, rule, ...prLines, ...wrapped.map((parts, i) => [[i ? '      ' : ' Log  ', '1'], ...parts]),
       keys([['1-9', 'open agent'], ['q', 'stop']])];
   }
   return lines.slice(0, rows).map(paint);

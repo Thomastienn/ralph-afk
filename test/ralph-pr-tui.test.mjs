@@ -56,16 +56,33 @@ test('a small terminal gets fewer steps per panel, no gaps, and never more rows 
   assert.ok(text.every(line => line.length <= 40));
 });
 
-test('PRs wrap onto more lines and take room from the log, never from the key line', () => {
+test('PRs wrap onto more lines and take room from the log, but never its newest 3 lines or the key line', () => {
   const prs = Array.from({ length: 12 }, (_, i) => `PR #${i + 10} T-${i}: CI running`);
   const text = screen(view({ prs, logs: steps(50) }), 60, 14);
   assert.equal(text.length, 14);
   assert.match(text.find(line => line.startsWith(' PRs')), /^ PRs {2}#10 T-0: CI running {3}#11/);
   assert.ok(text.some(line => line.includes('#21 T-11')));
   assert.match(text.at(-1), /open agent/);
-  const crowded = screen(view({ prs: Array(100).fill('PR #1 T-1: CI running'), logs: steps(5) }), 60, 10);
-  assert.equal(crowded.length, 10);
+  const crowded = screen(view({ jobs: [job(1, steps(9))], prs: Array(100).fill('PR #1 T-1: CI running'), logs: steps(5) }), 60, 12);
+  assert.equal(crowded.length, 12);
+  assert.match(crowded[2], /^ 1 {2}worker/);
+  assert.deepEqual(crowded.slice(-4, -1), [' Log  step 3', '      step 4', '      step 5']);
   assert.match(crowded.at(-1), /open agent/);
+});
+
+test('a narrow terminal keeps the right end of each bar and wraps header fields and log lines', () => {
+  const text = screen(view({
+    header: ['master', '2/3 workers busy', 'reviewer busy', '1 merged'],
+    jobs: [job(1, steps(2), { Title: 'A long task title that cannot fit', context: 84321 })],
+    logs: ['14:00:00 Status: 2 of 3 workers busy, reviewer busy; 4 ready tasks waiting.'],
+  }), 50, 20);
+  assert.match(text[0], /^ ralph-pr {2}· {2}master +\d\d:\d\d:\d\d $/);
+  assert.equal(text[1].trimEnd(), ' 2/3 workers busy  ·  reviewer busy  ·  1 merged');
+  assert.match(text[3], /^ 1 {2}worker {2}T-1 ─+ claude opus high 84k ctx · 12m$/); // the title gives way first
+  assert.deepEqual(text.slice(-4, -1), [' Log  14:00:00 Status: 2 of 3 workers busy,', '               reviewer busy; 4 ready tasks', '               waiting.']);
+  assert.ok(text.every(line => line.length <= 50));
+  const detail = screen(view({ jobs: [job(1, [])], focus: job(1, [], { Title: 'A long task title that cannot fit' }) }), 40, 10);
+  assert.match(detail[0], /^ 1 {2}worker {2}T-1 +claude opus high · 12m $/);
 });
 
 test('a full log never pushes past the bottom, and no room for log lines shows none', () => {

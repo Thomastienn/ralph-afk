@@ -219,6 +219,10 @@ whose checks all passed. Needs `.ralph-tui/pr-worker.md` and
   minutes so far and last 5 steps. At
   the bottom are the open PRs with their labels and CI state, then the
   supervisor log. A panel keeps its number while its agent runs.
+  - A small terminal keeps everything readable. Header fields and long log
+    lines wrap. A panel cuts its title before its agent and minutes. Panels
+    lose steps and PRs lose lines before the newest 3 log lines leave the
+    screen.
   - Colour marks state: workers cyan, the reviewer magenta, errors and
     failures red, passed CI and merges green, running CI yellow. Older steps
     are dim, so the newest stands out. The header turns yellow while
