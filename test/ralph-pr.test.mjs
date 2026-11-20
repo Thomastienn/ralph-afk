@@ -76,6 +76,7 @@ if [[ $* == *'Reply with exactly: pong'* && $* != *'## This run'* ]]; then
 fi
 task=$(sed -n 's/^Task: //p' <<< "$prompt")
 echo "${name} $task \${*:1:$#-1}" >> "$FIX/agents"
+printf '%s\\n' "$prompt" >> "$FIX/prompts"
 # A Claude session transcript, as the real CLI keeps one per working directory.
 if [[ ${name} == claude ]]; then
   d="$CLAUDE_CONFIG_DIR/projects/$(pwd | sed 's/[^a-zA-Z0-9]/-/g')"; mkdir -p "$d"
@@ -157,6 +158,10 @@ test('workers open one PR per task, oldest epic first; one reviewer at a time me
   assert.deepEqual(f.claims(), ['update E1.1 --claim', 'update E1.2 --claim', 'update E2.1 --claim']);
   assert.deepEqual(f.read('merges'), ['1', '2', '3']);
   assert.deepEqual(f.read('overlap'), []);
+  // Every worker and reviewer is told to merge the base into a conflicting PR, whatever the project's prompts say.
+  const prompts = readFileSync(join(f.fix, 'prompts'), 'utf8').split(/^(?=# (?:Worker|Reviewer) prompt$)/m);
+  assert.equal(prompts.length, 6, prompts.join('\n---\n'));
+  for (const prompt of prompts) assert.match(prompt, /says CONFLICTING, run `git fetch origin master` and `git merge origin\/master`/);
   for (const id of ['E1.1', 'E1.2', 'E2.1']) {
     assert.equal(f.issue(id).status, 'closed', id);
     assert.ok(!existsSync(join(f.base, 'repo-pr', id)), `${id} worktree removed`);

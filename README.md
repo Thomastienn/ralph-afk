@@ -222,6 +222,9 @@ whose checks all passed. Needs `.ralph-tui/pr-worker.md` and
   main checkout fast-forwards if it is on the default branch with no local
   changes.
 - Every 5 merges, `slow-tests.yml` is dispatched. A failure files a fix task.
+- Every worker and reviewer prompt ends with a catch-up rule: when the PR
+  conflicts with the base, merge `origin/<base>` and push before waiting on CI.
+  GitHub runs no CI on a conflicting PR, so without it the agent waits forever.
 - A PR labelled `in-review` whose CI failed before any review gets
   `needs-human`, not a reviewer. To hand it back to a worker, remove both
   labels. Once a reviewer has started a PR, red CI goes back to the reviewer,

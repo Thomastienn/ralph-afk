@@ -86,7 +86,9 @@ function command(row, prompt) {
 }
 const running = new Set();
 function launch(row, stage, name, cwd, facts) {
-  const prompt = `${readFileSync(prompts[stage], 'utf8')}\n\n## This run\n\n${facts.join('\n')}\n`;
+  // GitHub runs no CI on a conflicting PR and a reviewer starts only after CI passed, so an agent waiting on it waits forever.
+  const catchUp = `Before every wait on CI: when \`gh pr view <branch> --json mergeable\` says CONFLICTING, run \`git fetch origin ${base}\` and \`git merge origin/${base}\`, resolve the conflicts, commit and push. UNKNOWN means GitHub is still computing it: ask again after a few seconds.`;
+  const prompt = `${readFileSync(prompts[stage], 'utf8')}\n\n## This run\n\n${facts.join('\n')}\n\n${catchUp}\n`;
   const [bin, args] = command(row, prompt);
   const out = openSync(join(logs, `${name}.log`), 'a');
   // detached: Ctrl+C in this terminal reaches only the supervisor, never a running agent.
