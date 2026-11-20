@@ -6,6 +6,13 @@ Notes for coding agents working on this repository.
 
 - Update `README.md` in the same change whenever behavior, flags, files or
   environment variables change.
+- When a change alters what the `--pr` dashboard shows, update the made-up
+  data in `docs/demo.mjs` to match and regenerate the README screenshot
+  `docs/ralph-pr.png` in the same change. Nothing in CI does it:
+  `node docs/demo.mjs > /tmp/ralph-pr.svg`, then
+  `google-chrome --headless --hide-scrollbars --window-size=<W>,<H> --screenshot=docs/ralph-pr.png file:///tmp/ralph-pr.svg`,
+  with `<W>`,`<H>` the SVG's `width` and `height`. Look at the PNG before
+  committing.
 - Run `node --test test/*.test.mjs` before you finish. Tests use fake CLIs and
   `agents.example`, never the owner's `agents` file.
 
