@@ -222,7 +222,8 @@ agents. For only Codex, comment out the Claude lines; Codex then needs a
 
 Each worker takes a ready task into its own worktree and branch, opens a PR
 and waits for CI. One reviewer at a time reviews, fixes and squash-merges PRs
-whose checks all passed.
+whose checks all passed. It takes first the PR whose task blocks the most open
+tasks, counting the tasks those block in turn; the oldest PR on a tie.
 
 - At start, the local default branch is pushed to `origin` so workers branch
   from your latest planning commits. A changed `.beads/issues.jsonl` is

@@ -38,7 +38,7 @@ switch (cmd) {
     issues.push({ id, title: flag('--title'), issue_type: flag('--type'), status: 'open', labels: [], description: flag('--description') });
     save(); console.log(id); break;
   }
-  case 'list': out(issues.filter(i => i.status !== 'closed' && i.labels.includes(flag('--label')))); break;
+  case 'list': out(issues.filter(i => i.status !== 'closed' && (!flag('--label') || i.labels.includes(flag('--label'))))); break;
   case 'epic': out({ closed: [] }); break;
   default: out([]);
 }`;
@@ -327,6 +327,20 @@ test('after one Ctrl+C it waits for the running agents without polling gh and bd
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /E1\.1: PR in review\./);
   assert.ok(f.read('bd-calls').filter(call => call.startsWith('epic')).length <= 3, f.read('bd-calls').join('\n'));
+});
+
+test('the reviewer takes the PR that unblocks the most tasks first, counting the tasks those block', async () => {
+  const blocks = id => ({ status: 'blocked', dependencies: [{ depends_on_id: id, type: 'blocks' }] });
+  const review = { status: 'in_progress', labels: ['in-review'] };
+  // E1.1 blocks one task and is related to another; E1.2 blocks E1.4, which blocks E1.5.
+  const f = fixture([epic('E1'), task('E1.1', 'E1', review), task('E1.2', 'E1', review), task('E1.3', 'E1', blocks('E1.1')),
+    task('E1.4', 'E1', blocks('E1.2')), task('E1.5', 'E1', blocks('E1.4')),
+    task('E1.6', 'E1', { status: 'blocked', dependencies: [{ depends_on_id: 'E1.1', type: 'related' }] })]);
+  const pr = (number, id) => ({ number, headRefName: id, title: id, state: 'OPEN', reviews: [], comments: [], statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }] });
+  writeFileSync(join(f.fix, 'prs.json'), JSON.stringify([pr(1, 'E1.1'), pr(2, 'E1.2')]));
+  const result = await f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(f.read('merges'), ['2', '1']);
 });
 
 test('the reviewer takes only PRs whose CI passed; a red PR in review gets needs-human', async () => {

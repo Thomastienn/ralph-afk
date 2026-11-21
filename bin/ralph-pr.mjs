@@ -351,6 +351,18 @@ function startReview(pr, row) {
   launch(row, 'reviewer', `review-${pr.number}`, reviewTree,
     [`PR: #${pr.number}`, `Task: ${pr.task.id}`, `Title: ${pr.task.title}`, `Branch: ${pr.headRefName}`, `Base: ${base}`]);
 }
+// The reviewer takes the PR that unblocks the most open tasks first, counting the tasks those block in turn.
+function blocking() {
+  const blocks = new Map(); // task -> the open tasks waiting on it directly
+  for (const issue of json('bd', ['list', '--status', 'open,in_progress,blocked', '--json', '--limit', '0']) ?? []) {
+    for (const dep of issue.dependencies ?? []) if (dep.type === 'blocks') blocks.set(dep.depends_on_id, [...(blocks.get(dep.depends_on_id) ?? []), issue.id]);
+  }
+  return id => {
+    const seen = new Set();
+    for (const todo = [id]; todo.length;) for (const next of blocks.get(todo.pop()) ?? []) if (!seen.has(next)) { seen.add(next); todo.push(next); }
+    return seen.size;
+  };
+}
 let merges = 0;
 let slow = null; // the dispatched slow-suite run being watched
 function reviewDone(job) {
@@ -518,8 +530,10 @@ function poll() {
     const since = Date.parse(held.since);
     if ([...pr.reviews, ...pr.comments].some(item => item.state !== 'PENDING' && Date.parse(item.submittedAt ?? item.createdAt) > since)) startFix(pr, held);
   }
-  const next = !human && prs.find(pr => labelled(pr.task, 'in-review') && settled(pr) && (passed(pr) || reviewed.has(pr.number)));
-  if (!stopping && !reviewing && next) {
+  const queue = human ? [] : prs.filter(pr => labelled(pr.task, 'in-review') && settled(pr) && (passed(pr) || reviewed.has(pr.number)));
+  if (!stopping && !reviewing && queue.length) {
+    const blocks = blocking();
+    const next = queue.sort((a, b) => blocks(b.task.id) - blocks(a.task.id))[0]; // stable: the oldest PR on a tie
     const row = pick('reviewer');
     if (row) startReview(next, row);
     else log('No reviewer agent available now; waiting.');
