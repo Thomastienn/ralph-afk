@@ -113,14 +113,16 @@ export function startTui(state, interrupt) {
     // Clear each line before writing it: erasing after a full-width line would also erase its last character.
     stdout.write(`\x1b[H${lines.map(line => `\x1b[2K${line}`).join('\n')}${lines.length < stdout.rows ? '\n\x1b[J' : ''}`);
   };
+  // One chunk can hold several keys: presses made while the sync gh and bd calls block the loop arrive together.
   const keys = data => {
-    const key = data.toString();
-    const job = /^[1-9]$/.test(key) && state().jobs.find(entry => entry.slot === Number(key));
-    if (key === '\x03' || key === 'q') interrupt();
-    else if (job) { focus = job; scroll = 0; }
-    else if (key === '\x1b') { focus = null; scroll = 0; }
-    else if (focus && key === '\x1b[A') scroll = Math.min(scroll + 1, Math.max(0, focus.steps.length - bodyRows(stdout.rows)));
-    else if (focus && key === '\x1b[B') scroll = Math.max(0, scroll - 1);
+    for (const key of data.toString().match(/\x1b\[[0-9;]*[A-Za-z~]|[\s\S]/g) ?? []) {
+      const job = /^[1-9]$/.test(key) && state().jobs.find(entry => entry.slot === Number(key));
+      if (key === '\x03' || key === 'q') interrupt();
+      else if (job) { focus = job; scroll = 0; }
+      else if (key === '\x1b') { focus = null; scroll = 0; }
+      else if (focus && key === '\x1b[A') scroll = Math.min(scroll + 1, Math.max(0, focus.steps.length - bodyRows(stdout.rows)));
+      else if (focus && key === '\x1b[B') scroll = Math.max(0, scroll - 1);
+    }
     draw();
   };
   const crash = error => { stop(); console.error(error); process.exit(1); }; // else the error dies with the alternate screen

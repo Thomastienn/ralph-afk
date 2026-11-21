@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { render } from '../bin/ralph-pr-tui.mjs';
+import { render, startTui } from '../bin/ralph-pr-tui.mjs';
 
 const now = Date.now();
 const job = (slot, steps, extra = {}) => ({ slot, stage: 'worker', Task: `T-${slot}`, Title: `Task ${slot}`, agent: 'claude', model: 'opus', effort: 'high', started: now - 12 * 60000, steps, ...extra });
@@ -121,4 +121,17 @@ test('control characters and escape codes in agent output cannot break the layou
   const lines = render(view({ jobs: [job(1, ['a\tb\x1b[31mred\r\n'])] }), 80, 20);
   assert.equal(plain(lines[3]), ' │ a b [31mred  ');
   assert.ok(!lines[3].includes('\x1b[31mred'));
+});
+
+test('keys that arrive in one chunk each count: q pressed twice while the loop was busy stops twice', t => {
+  // Stub the real streams: replacing process.stdin makes node --test hang at exit.
+  const { stdin, stdout } = process;
+  for (const name of ['setRawMode', 'resume', 'pause']) { stdin[name] = () => stdin; t.after(() => delete stdin[name]); }
+  t.mock.method(stdout, 'write', () => true);
+  let stops = 0;
+  const tui = startTui(() => view(), () => stops++);
+  stdin.emit('data', Buffer.from('qq'));
+  stdin.emit('data', Buffer.from('\x1b[Aq'));
+  tui.stop();
+  assert.equal(stops, 3);
 });
