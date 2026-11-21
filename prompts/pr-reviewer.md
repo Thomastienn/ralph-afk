@@ -55,7 +55,9 @@ with a note and the PR has a comment saying why.
   Middle Man (call the real target), Refused Bequest (composition over
   inheritance).
 - **Tests**: changed behaviour has a test at the cheapest level the project's
-  testing docs allow.
+  testing docs allow. Delete tests the diff adds or leaves behind that those
+  docs forbid, that copy an existing test, or that no longer reach the code
+  they claim to cover.
 - **Mockup**: a `new-ui` task matches the design its `Mockup:` line links
   under `docs/mockups/`.
 - **Secrets**: the diff carries no credentials, tokens, keys or personal data.
