@@ -11,6 +11,7 @@ of usage, they switch to another and wait for limits to reset.
 | `ralph` | One headless Ralph run on one epic. |
 | `ralph-afk` | Works every ready epic, one task at a time, switching agents on usage limits. |
 | `ralph-afk --pr` | Parallel workers (agents, or you), one PR per task; a reviewer agent, or you, merges once CI passes. |
+| `ralph-afk --init` | One-time setup of a new project's checkout. |
 
 ## Requirements
 
@@ -19,6 +20,8 @@ of usage, they switch to another and wait for limits to reset.
 - [`bd`](https://github.com/steveyegge/beads) (Beads) and `bv` (used by Ralph's `beads-bv` tracker)
 - `claude` and/or `codex`
 - `--pr` only: `gh`, authenticated, and a GitHub remote with CI
+- `--pr` with a Claude reviewer: the ponytail Claude Code plugin, for its
+  `ponytail:ponytail-review` skill
 
 ## Setup
 
@@ -50,7 +53,10 @@ The linked files are global Ralph defaults; a project's
 
 ### Once per project
 
-In the project's checkout:
+In the project's checkout, run `ralph-afk --init`. It runs `bd init` when
+there is no `.beads/`, adds a `## Ralph runs` authorization to `AGENTS.md`
+(steps 1 and 5 below) and prints what is left. It never overwrites a file, so
+running it again is safe.
 
 1. `bd init`.
 2. Optional: `ralph-tui init` for a project `.ralph-tui/config.toml`, e.g. to
@@ -63,8 +69,10 @@ In the project's checkout:
    for one Ralph run, no full-suite gate tickets (`ralph-afk` makes those).
 5. In `AGENTS.md`, authorize Ralph runs to implement, verify, close tasks and
    commit without asking. Otherwise agents stop for approval nobody gives.
-6. `--pr` only: write `.ralph-tui/pr-worker.md` and `.ralph-tui/pr-reviewer.md`,
-   and set up CI on GitHub.
+   Name the project's test and format commands there too: the built-in `--pr`
+   prompts point agents to them.
+6. `--pr` only: set up CI on GitHub. Optional: override a prompt (see
+   [Prompts](#prompts)).
 7. Smoke test: `ralph --agent codex --iterations 1`.
 
 ## Agents file
@@ -214,8 +222,7 @@ agents. For only Codex, comment out the Claude lines; Codex then needs a
 
 Each worker takes a ready task into its own worktree and branch, opens a PR
 and waits for CI. One reviewer at a time reviews, fixes and squash-merges PRs
-whose checks all passed. Needs `.ralph-tui/pr-worker.md` and
-`.ralph-tui/pr-reviewer.md`.
+whose checks all passed.
 
 - At start, the local default branch is pushed to `origin` so workers branch
   from your latest planning commits. A changed `.beads/issues.jsonl` is
@@ -284,10 +291,24 @@ whose checks all passed. Needs `.ralph-tui/pr-worker.md` and
 - When the supervisor dies any other way (`kill -9`, a closed terminal), each
   running agent and its child processes get SIGTERM within 2 s.
 
+### Prompts
+
+Workers and reviewers run with `prompts/pr-worker.md` and
+`prompts/pr-reviewer.md` from this repository. A checkout's own
+`.ralph-tui/pr-worker.md` or `.ralph-tui/pr-reviewer.md` replaces the
+built-in one for that project; copy the built-in one there to start.
+
+- The worker prompt fits any project: it reads the task, implements it, runs
+  the tests the project's docs name, opens the PR and waits for green CI.
+- The reviewer prompt makes a Claude reviewer review with the
+  `ponytail:ponytail-review` skill (from the ponytail plugin), then fix and
+  merge. Codex has no skills, so a Codex reviewer uses the prompt's checklist
+  alone.
+
 ### You as the worker
 
-With a `worker|human` line in the agents file, no worker agent runs and
-`.ralph-tui/pr-worker.md` is not needed:
+With a `worker|human` line in the agents file, no worker agent runs and the
+worker prompt is not used:
 
 1. Pick a ready task, make a branch named after its ID (e.g. `TreeTutor-7t3`),
    push it and open a PR.

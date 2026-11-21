@@ -6,6 +6,34 @@ here="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
 root="$(git rev-parse --show-toplevel)"
 cd -- "$root"
 
+# --init: one-time setup of a new checkout. Never overwrites; safe to run again.
+if [[ "${1-}" == --init ]]; then
+  (( $# == 1 )) || { echo 'Usage: ralph-afk --init' >&2; exit 2; }
+  [[ -d .beads ]] || bd init
+  if ! grep -qx '## Ralph runs' AGENTS.md 2>/dev/null; then
+    [[ ! -s AGENTS.md ]] || echo >> AGENTS.md
+    cat >> AGENTS.md <<'EOF'
+## Ralph runs
+
+The owner authorizes Ralph runs (`ralph`, `ralph-afk`, `ralph-afk --pr`) to
+implement ready Beads tasks, verify them, close finished tasks and commit
+without asking for approval. Choose and record sensible defaults for routine
+decisions. In PR mode, workers push their task branch and open a pull request,
+and the reviewer pushes to pull request branches and squash-merges them.
+EOF
+    echo 'Added the Ralph runs authorization to AGENTS.md.'
+  fi
+  cat <<EOF
+Left for you:
+1. In Claude Code, run /setup-matt-pocock-skills with Beads as the tracker.
+2. Name the project's test and format commands in AGENTS.md.
+3. --pr only: set up CI on GitHub.
+4. Smoke test: ralph --agent codex --iterations 1
+To change a --pr prompt for this project, copy $(readlink -f -- "$here/../prompts")/pr-<stage>.md to .ralph-tui/ and edit it.
+EOF
+  exit 0
+fi
+
 # Two supervisors would take over each other's Ralph forever.
 mkdir -p .ralph-tui
 exec 9>.ralph-tui/afk.lock
@@ -19,7 +47,7 @@ agents="${RALPH_AGENTS:-$agents}"
 # This also catches the retired ralph stage and the old probe column.
 bad="$(awk -F'|' '!/^[[:space:]]*(#|$)/ && !($1 == "workers" && NF == 2 && $2 ~ /^[1-9][0-9]*$/) && !($0 == "worker|human" || $0 == "reviewer|human") && ($1 !~ /^(worker|reviewer)$/ || $2 !~ /^(claude|codex)$/ || NF != 4) { print NR; exit }' "$agents")"
 [[ -z "$bad" ]] || { echo "$agents line $bad: expected stage|agent|model|effort, stage worker or reviewer, agent claude or codex, or workers|N, worker|human or reviewer|human (see agents.example)." >&2; exit 1; }
-usage='Usage: ralph-afk [epic...] | ralph-afk --pr'
+usage='Usage: ralph-afk [epic...] | ralph-afk --pr | ralph-afk --init'
 # The agents file is the only list of agents: comment a line out to stop using that agent.
 mapfile -t known < <(awk -F'|' '$1 == "worker" { print $2 }' "$agents")
 pr=false

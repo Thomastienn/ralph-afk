@@ -196,13 +196,15 @@ test('workers open one PR per task, oldest epic first; one reviewer at a time me
   }
 });
 
-test('--pr refuses to start without the worker prompt', async () => {
+test('--pr uses the built-in prompts when the checkout has none', async () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1')]);
-  rmSync(join(f.cwd, '.ralph-tui/pr-worker.md'));
+  for (const stage of ['worker', 'reviewer']) rmSync(join(f.cwd, `.ralph-tui/pr-${stage}.md`));
   const result = await f.run();
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /Missing \.ralph-tui\/pr-worker\.md/);
-  assert.deepEqual(f.claims(), []);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(f.read('merges'), ['1']);
+  const prompts = readFileSync(join(f.fix, 'prompts'), 'utf8');
+  assert.match(prompts, /^# PR worker$/m);
+  assert.match(prompts, /^# PR reviewer$[\s\S]*MUST invoke the `ponytail:ponytail-review` skill/m);
 });
 
 test('--pr refuses to start with uncommitted changes and pushes nothing', async () => {
@@ -274,7 +276,7 @@ test('only agents with a line in the agents file run; a stage with no line, or a
 
   const counted = await fixture([epic('E1'), task('E1.1', 'E1')]).run({}, ['2']);
   assert.equal(counted.status, 2);
-  assert.match(counted.stderr, /^Usage: ralph-afk \[epic\.\.\.\] \| ralph-afk --pr$/m);
+  assert.match(counted.stderr, /^Usage: ralph-afk \[epic\.\.\.\] \| ralph-afk --pr \| ralph-afk --init$/m);
 });
 
 test('a task whose worker keeps failing gets needs-human after 3 tries while other work merges', async () => {

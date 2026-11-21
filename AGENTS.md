@@ -24,6 +24,8 @@ Notes for coding agents working on this repository.
 - `bin/ralph-probe.mjs`: built-in Claude and Codex usage probes.
 - `bin/ralph-takeover.mjs`: stops a running Ralph safely before a new one starts.
 - `ralph-tui/`: global ralph-tui config, tracker plugin and prompt template.
+- `prompts/`: built-in `--pr` worker and reviewer prompts; a checkout's
+  `.ralph-tui/pr-<stage>.md` overrides them.
 
 ## Agents file lookup
 

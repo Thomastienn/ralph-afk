@@ -152,7 +152,7 @@ test('the retired -a option is refused; sequential mode ignores workers|N, worke
   const f = fixture({ 'TreeTutor-sh8': 1 });
   const retired = f.run({}, ['-a', 'codex']);
   assert.equal(retired.status, 2);
-  assert.match(retired.stderr, /^Usage: ralph-afk \[epic\.\.\.\] \| ralph-afk --pr$/m);
+  assert.match(retired.stderr, /^Usage: ralph-afk \[epic\.\.\.\] \| ralph-afk --pr \| ralph-afk --init$/m);
   assert.deepEqual(f.runs(), []);
 
   const table = join(f.cwd, 'counted');
@@ -259,4 +259,23 @@ test('out of ready work, a gate epic is made once, only if a task closed after t
     assert.equal(f.read('creates').length, made ? 2 : 0, JSON.stringify(all));
     assert.match(result.stdout, /No ready work/);
   }
+});
+
+test('--init runs bd init and adds the AGENTS.md authorization once, keeping what is there', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'ralph-afk-init-'));
+  execFileSync('git', ['init', '-q', cwd]);
+  mkdirSync(join(cwd, 'bin'));
+  writeFileSync(join(cwd, 'bin/bd'), `#!/usr/bin/env bash\necho "$*" >> "${cwd}/bd-calls"; mkdir .beads\n`, { mode: 0o755 });
+  writeFileSync(join(cwd, 'AGENTS.md'), '# Rules\n');
+  const script = fileURLToPath(new URL('../bin/ralph-afk', import.meta.url));
+  // No agents file: setup comes before there is one.
+  const env = { ...process.env, PATH: `${cwd}/bin:${process.env.PATH}`, RALPH_AGENTS: join(cwd, 'missing') };
+  for (let i = 0; i < 2; i++) {
+    const out = execFileSync('bash', [script, '--init'], { cwd, env, encoding: 'utf8' });
+    assert.match(out, /Left for you:[\s\S]*setup-matt-pocock-skills/);
+  }
+  assert.equal(readFileSync(join(cwd, 'bd-calls'), 'utf8'), 'init\n');
+  const agents = readFileSync(join(cwd, 'AGENTS.md'), 'utf8');
+  assert.ok(agents.startsWith('# Rules\n\n## Ralph runs\n'), agents);
+  assert.equal(agents.match(/## Ralph runs/g).length, 1);
 });

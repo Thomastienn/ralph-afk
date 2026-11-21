@@ -22,7 +22,11 @@ const TRIES = 3; // failed agent runs on one task or PR before it needs a human
 const trees = join(dirname(root), `${basename(root)}-pr`); // outside the checkout, so nothing lands in .gitignore
 const logs = join(root, '.ralph-tui/pr-logs');
 const agentsFile = env.RALPH_AGENTS || (existsSync('.ralph-tui/agents') ? '.ralph-tui/agents' : join(here, '../agents')); // ralph-afk checked it exists
-const prompts = { worker: '.ralph-tui/pr-worker.md', reviewer: '.ralph-tui/pr-reviewer.md' };
+// A checkout's own .ralph-tui/pr-<stage>.md beats the built-in prompts/pr-<stage>.md.
+const prompts = Object.fromEntries(['worker', 'reviewer'].map(stage => {
+  const own = `.ralph-tui/pr-${stage}.md`;
+  return [stage, existsSync(own) ? own : join(here, `../prompts/pr-${stage}.md`)];
+}));
 
 let screen = null; // the dashboard, while stdin and stdout are a terminal
 const events = []; // the dashboard's log lines
@@ -56,9 +60,6 @@ const human = table.some(row => row.stage === 'reviewer' && row.agent === 'human
 // worker|human: the owner writes the code on a branch named after the task; no worker agent runs.
 const humanWorker = table.some(row => row.stage === 'worker' && row.agent === 'human');
 if (human && humanWorker) fail(`${agentsFile} has worker|human and reviewer|human: that leaves ralph-afk --pr nothing to do.`);
-for (const [stage, file] of Object.entries(prompts)) {
-  if (!existsSync(file) && !(stage === 'worker' && humanWorker)) fail(`Missing ${file}: the ${stage} prompt for ralph-afk --pr.`);
-}
 
 // Same windows as ralph-afk: space-separated FROM-TO=agents in local hours.
 function scheduled() {
