@@ -26,8 +26,8 @@ pushes to your branch and Beads updates are authorized.
    the push, fix what it reports (remove a flagged secret from the branch
    history) and push again.
 6. **Open the PR**: `gh pr create --base <base> --head <branch> --title
-   "task: <task> <title>"`, with a body that lists what changed, each
-   acceptance criterion with its evidence, and the defaults you chose.
+   "task: <task> <title>"`, with a body that lists motivation, decision, what changed, each
+   acceptance criterion with its evidence, tradeoffs or any notes, and the defaults you chose.
 7. **Wait for CI**: `gh pr checks <branch> --watch`. When a check is red, read
    it (`gh run view <run> --log-failed`), fix, push and wait again, up to 3
    fix rounds.
