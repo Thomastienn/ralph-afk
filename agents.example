@@ -12,6 +12,8 @@
 # workers|N: the number of --pr workers (default 3); sequential mode ignores it.
 # reviewer|human: you review --pr PRs on GitHub: merge to accept, comment to have the worker fix them.
 #   The other reviewer lines are then ignored. Sequential mode ignores it.
+# worker|human: you write the code on a branch named after the task and open the PR; --pr only reviews it.
+#   No worker agent runs. Sequential mode ignores it. Not together with reviewer|human.
 
 worker|claude|sonnet|high
 worker|codex|gpt-6.2-sol|medium

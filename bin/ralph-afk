@@ -15,10 +15,10 @@ flock -n 9 || { echo 'ralph-afk is already running in this checkout.' >&2; exit 
 [[ -f .ralph-tui/agents ]] && agents=.ralph-tui/agents || agents="$here/../agents"
 agents="${RALPH_AGENTS:-$agents}"
 [[ -f "$agents" ]] || { echo "Missing $agents: cp $(readlink -f -- "$here/../agents.example") $agents, then edit it." >&2; exit 1; }
-# Every line is worker or reviewer, for claude or codex: the agents with a built-in probe; or workers|N, or reviewer|human.
+# Every line is worker or reviewer, for claude or codex: the agents with a built-in probe; or workers|N, worker|human or reviewer|human.
 # This also catches the retired ralph stage and the old probe column.
-bad="$(awk -F'|' '!/^[[:space:]]*(#|$)/ && !($1 == "workers" && NF == 2 && $2 ~ /^[1-9][0-9]*$/) && !($0 == "reviewer|human") && ($1 !~ /^(worker|reviewer)$/ || $2 !~ /^(claude|codex)$/ || NF != 4) { print NR; exit }' "$agents")"
-[[ -z "$bad" ]] || { echo "$agents line $bad: expected stage|agent|model|effort, stage worker or reviewer, agent claude or codex, or workers|N, or reviewer|human (see agents.example)." >&2; exit 1; }
+bad="$(awk -F'|' '!/^[[:space:]]*(#|$)/ && !($1 == "workers" && NF == 2 && $2 ~ /^[1-9][0-9]*$/) && !($0 == "worker|human" || $0 == "reviewer|human") && ($1 !~ /^(worker|reviewer)$/ || $2 !~ /^(claude|codex)$/ || NF != 4) { print NR; exit }' "$agents")"
+[[ -z "$bad" ]] || { echo "$agents line $bad: expected stage|agent|model|effort, stage worker or reviewer, agent claude or codex, or workers|N, worker|human or reviewer|human (see agents.example)." >&2; exit 1; }
 usage='Usage: ralph-afk [epic...] | ralph-afk --pr'
 # The agents file is the only list of agents: comment a line out to stop using that agent.
 mapfile -t known < <(awk -F'|' '$1 == "worker" { print $2 }' "$agents")

@@ -27,6 +27,7 @@ switch (cmd) {
   case 'update': {
     const issue = get(rest[0]);
     if (rest.includes('--claim')) { if (issue.status !== 'open') process.exit(1); issue.status = 'in_progress'; }
+    if (flag('--status')) issue.status = flag('--status');
     if (flag('--add-label')) issue.labels.push(flag('--add-label'));
     save(); break;
   }
@@ -381,6 +382,46 @@ test('reviewer|human: the worker session is compacted and waits; your review is 
   assert.match(result.stdout, /Merged PR #1 \(E1\.1\)\./);
   assert.deepEqual(f.read('merges'), []);
   assert.equal(f.issue('E1.1').status, 'closed');
+});
+
+test('worker|human: no worker runs; your PR is reviewed once its CI passes, a red one waits for you', async () => {
+  const f = fixture([epic('E1'), task('E1.1', 'E1'), task('E1.2', 'E1'), task('E1.3', 'E1')]);
+  const table = join(f.base, 'agents');
+  writeFileSync(table, 'workers|2\nworker|human\nreviewer|claude|opus|high\n');
+  // No worker prompt is needed, and your work in progress may sit in the checkout.
+  rmSync(join(f.cwd, '.ralph-tui/pr-worker.md'));
+  writeFileSync(join(f.cwd, 'wip.txt'), 'half done\n');
+  for (const id of ['E1.1', 'E1.2']) {
+    f.git('checkout', '-qb', id);
+    writeFileSync(join(f.cwd, `${id}.txt`), `${id}\n`);
+    f.git('add', `${id}.txt`);
+    f.git('commit', '-qm', id);
+    f.git('push', '-q', 'origin', id);
+    f.git('checkout', '-q', 'master');
+  }
+  const pr = (number, id, conclusion) => ({ number, headRefName: id, title: id, state: 'OPEN', reviews: [], comments: [], statusCheckRollup: [{ status: 'COMPLETED', conclusion }] });
+  writeFileSync(join(f.fix, 'prs.json'), JSON.stringify([pr(1, 'E1.1', 'SUCCESS'), pr(2, 'E1.2', 'FAILURE')]));
+  const result = await f.run({ RALPH_AGENTS: table }, [], out => /Merged PR #1/.test(out));
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /you write the code, one reviewer/);
+  assert.match(result.stdout, /PR #1 \(E1\.1\): CI passed; in review\./);
+  assert.deepEqual(f.claims(), []);
+  const agents = f.read('agents');
+  assert.equal(agents.length, 1, agents.join('\n'));
+  assert.match(agents[0], /^claude E1\.1 -p --permission-mode auto --model opus /);
+  assert.deepEqual(f.read('merges'), ['1']);
+  assert.equal(f.issue('E1.1').status, 'closed');
+  assert.deepEqual(f.issue('E1.2').labels, []);
+  assert.equal(f.issue('E1.3').status, 'open');
+});
+
+test('worker|human with reviewer|human is refused', async () => {
+  const f = fixture([epic('E1'), task('E1.1', 'E1')]);
+  const table = join(f.base, 'agents');
+  writeFileSync(table, 'worker|human\nreviewer|human\n');
+  const result = await f.run({ RALPH_AGENTS: table });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /worker\|human and reviewer\|human: that leaves ralph-afk --pr nothing to do/);
 });
 
 test('out of work, --pr keeps checking: a task filed later runs on the planning commits made since', async () => {

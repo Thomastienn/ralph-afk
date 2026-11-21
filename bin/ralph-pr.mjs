@@ -43,9 +43,6 @@ const fail = message => { console.error(message); process.exit(1); };
 const labelled = (issue, ...names) => (issue.labels ?? []).some(label => names.includes(label));
 const show = id => { const out = attempt('bd', ['show', id, '--json']); return out && JSON.parse(out)[0]; };
 
-for (const [stage, file] of Object.entries(prompts)) {
-  if (!existsSync(file)) fail(`Missing ${file}: the ${stage} prompt for ralph-afk --pr.`);
-}
 // Workers share the worker lines with ralph-afk.
 const table = readFileSync(agentsFile, 'utf8').split('\n')
   .filter(line => line.trim() && !line.trimStart().startsWith('#'))
@@ -56,6 +53,12 @@ for (const stage of Object.keys(prompts)) {
 const slots = Number(table.find(row => row.stage === 'workers')?.agent ?? 3); // ralph-afk checked workers|N
 // reviewer|human: the owner reviews and merges on GitHub; the other reviewer lines are ignored.
 const human = table.some(row => row.stage === 'reviewer' && row.agent === 'human');
+// worker|human: the owner writes the code on a branch named after the task; no worker agent runs.
+const humanWorker = table.some(row => row.stage === 'worker' && row.agent === 'human');
+if (human && humanWorker) fail(`${agentsFile} has worker|human and reviewer|human: that leaves ralph-afk --pr nothing to do.`);
+for (const [stage, file] of Object.entries(prompts)) {
+  if (!existsSync(file) && !(stage === 'worker' && humanWorker)) fail(`Missing ${file}: the ${stage} prompt for ralph-afk --pr.`);
+}
 
 // Same windows as ralph-afk: space-separated FROM-TO=agents in local hours.
 function scheduled() {
@@ -215,8 +218,9 @@ function commitBeads(message) {
   if (attempt('git', ['commit', '-q', '-m', message, '--', '.beads/issues.jsonl']) !== null) log('Committed the Beads export.');
 }
 // Workers branch from origin, so uncommitted planning work would miss them. Never commit it blindly: it gets pushed.
+// With worker|human no worker branches here, and the owner's own work in progress may be in this checkout.
 commitBeads('chore(beads): export before ralph-afk --pr');
-const dirty = run('git', ['status', '--porcelain', '--', '.', ':!.ralph-tui', ':!.beads/issues.jsonl']);
+const dirty = !humanWorker && run('git', ['status', '--porcelain', '--', '.', ':!.ralph-tui', ':!.beads/issues.jsonl']);
 if (dirty) fail(`Uncommitted changes; commit or stash them first:\n${dirty}`);
 // The owner's planning commits must reach GitHub before workers branch from it.
 try { run('git', ['push', '-q', 'origin', base], { stdio: ['ignore', 'pipe', 'inherit'] }); }
@@ -449,7 +453,7 @@ function listParked() {
 const minutes = start => `${Math.floor((Date.now() - start) / 60000)}m`;
 function status(prs, waiting) {
   const jobs = [...running];
-  log(`Status: ${jobs.filter(job => job.stage === 'worker').length} of ${slots} workers busy, reviewer ${jobs.some(job => job.stage === 'reviewer') ? 'busy' : 'free'}; ${waiting} ready tasks waiting; ${merges} merged this run.`);
+  log(`Status: ${humanWorker ? 'worker you' : `${jobs.filter(job => job.stage === 'worker').length} of ${slots} workers busy`}, reviewer ${jobs.some(job => job.stage === 'reviewer') ? 'busy' : 'free'}; ${waiting} ready tasks waiting; ${merges} merged this run.`);
   for (const job of jobs) console.log(`  ${job.stage} ${job.name} (${agentLabel(job)}, ${minutes(job.started)}): ${job.last ?? 'starting'}`.slice(0, 240));
   for (const pr of prs) console.log(`  ${prState(pr, jobs)}`);
 }
@@ -464,7 +468,7 @@ function dashboard() {
   const workers = jobs.filter(job => job.stage === 'worker').length;
   const reviewer = human ? 'you' : jobs.some(job => job.stage === 'reviewer') ? 'busy' : 'free';
   return {
-    header: [base, `${workers}/${slots} workers busy`, `reviewer ${reviewer}`, `${latest.waiting} ready`, `${merges} merged`,
+    header: [base, humanWorker ? 'worker you' : `${workers}/${slots} workers busy`, `reviewer ${reviewer}`, `${latest.waiting} ready`, `${merges} merged`,
       ...(idle ? ['out of work'] : []), ...(stopping ? ['stopping'] : [])],
     stopping,
     jobs, prs: latest.prs.map(pr => prState(pr, jobs)), logs: events,
@@ -475,7 +479,7 @@ let idle = false;
 let shown = 0; // when the last status block printed
 let latest = { prs: [], waiting: 0 }; // the last check, for the dashboard
 if (process.stdin.isTTY && process.stdout.isTTY) screen = startTui(dashboard, interrupt);
-log(`PR mode on ${base}: up to ${slots} workers, ${human ? 'you review on GitHub' : 'one reviewer'}.`);
+log(`PR mode on ${base}: ${humanWorker ? 'you write the code' : `up to ${slots} workers`}, ${human ? 'you review on GitHub' : 'one reviewer'}.`);
 // One pass over the queue; true once a requested stop has nothing left running.
 function poll() {
   const closed = JSON.parse(attempt('bd', ['epic', 'close-eligible', '--json']) ?? '{}').closed ?? [];
@@ -483,18 +487,25 @@ function poll() {
   checkSlow();
   const workers = [...running].filter(job => job.stage === 'worker');
   const ready = stopping ? [] : readyTasks().filter(task => !workers.some(job => job.Task === task.id));
-  for (const task of ready.slice(0, slots - workers.length)) {
+  for (const task of humanWorker ? [] : ready.slice(0, slots - workers.length)) {
     const row = pick('worker');
     if (!row) { log('No worker agent available now.'); break; }
     startWorker(task, row);
   }
   const open = taskPrs();
+  // worker|human: the owner's PR is in review once its CI passes; in-review keeps the rest of the flow as for a worker's.
+  for (const pr of humanWorker ? open.filter(pr => !labelled(pr.task, 'in-review', 'needs-human') && settled(pr) && passed(pr)) : []) {
+    if (attempt('bd', ['update', pr.task.id, '--status', 'in_progress', '--add-label', 'in-review']) === null) continue;
+    pr.task.labels = [...(pr.task.labels ?? []), 'in-review'];
+    log(`PR #${pr.number} (${pr.task.id}): CI passed; in review.`);
+  }
   strays(open);
   const prs = open.filter(pr => !labelled(pr.task, 'needs-human'));
   const reviewing = [...running].some(job => job.stage === 'reviewer');
   // A worker labels a PR in-review only on green CI; one that is red anyway waits for the owner.
+  // The owner's own PR going red before a review is theirs to fix: it just waits.
   const busy = pr => [...running].some(job => job.Task === pr.task.id);
-  for (const pr of prs.filter(pr => labelled(pr.task, 'in-review') && settled(pr) && !passed(pr) && !reviewed.has(pr.number) && !busy(pr))) {
+  for (const pr of humanWorker ? [] : prs.filter(pr => labelled(pr.task, 'in-review') && settled(pr) && !passed(pr) && !reviewed.has(pr.number) && !busy(pr))) {
     attempt('bd', ['update', pr.task.id, '--add-label', 'needs-human']);
     attempt('bd', ['note', pr.task.id, `ralph-afk --pr: PR #${pr.number} is in review but its CI failed.`]);
     log(`PR #${pr.number} is in review but its CI failed; labelled needs-human. Remove in-review too to hand it back to a worker.`);
@@ -514,7 +525,7 @@ function poll() {
   }
   if (stopping && !running.size) return true;
   // Out of work: keep checking, so tasks filed later start without a restart.
-  const nothing = !running.size && !ready.length && !prs.length && !slow;
+  const nothing = !running.size && !(humanWorker ? 0 : ready.length) && !prs.length && !slow;
   if (nothing && !idle) {
     log(`Out of work. Checking for new tasks every ${pollMs / 1000}s; Ctrl+C to stop.`);
     listParked();

@@ -10,7 +10,7 @@ of usage, they switch to another and wait for limits to reset.
 | --- | --- |
 | `ralph` | One headless Ralph run on one epic. |
 | `ralph-afk` | Works every ready epic, one task at a time, switching agents on usage limits. |
-| `ralph-afk --pr` | Parallel workers, one PR per task; a reviewer agent, or you, merges once CI passes. |
+| `ralph-afk --pr` | Parallel workers (agents, or you), one PR per task; a reviewer agent, or you, merges once CI passes. |
 
 ## Requirements
 
@@ -90,6 +90,12 @@ A `reviewer|human` line means you review the `--pr` PRs on GitHub yourself;
 see [You as the reviewer](#you-as-the-reviewer). The other `reviewer` lines
 are then ignored, so commenting out `reviewer|human` brings the AI reviewer
 back.
+
+A `worker|human` line means you write the code and `--pr` only reviews it;
+see [You as the worker](#you-as-the-worker). No worker agent runs and
+`workers|N` is ignored. Sequential `ralph-afk` ignores `worker|human` and
+runs its other `worker` lines. `worker|human` with `reviewer|human` is
+refused, since it leaves `--pr` nothing to do.
 
 ### Which agents file is used
 
@@ -277,6 +283,25 @@ whose checks all passed. Needs `.ralph-tui/pr-worker.md` and
 - Ctrl+C: as in sequential mode.
 - When the supervisor dies any other way (`kill -9`, a closed terminal), each
   running agent and its child processes get SIGTERM within 2 s.
+
+### You as the worker
+
+With a `worker|human` line in the agents file, no worker agent runs and
+`.ralph-tui/pr-worker.md` is not needed:
+
+1. Pick a ready task, make a branch named after its ID (e.g. `TreeTutor-7t3`),
+   push it and open a PR.
+2. Once all its checks pass, the supervisor sets the task to `in_progress`,
+   labels it `in-review` and the AI reviewer reviews, fixes and squash-merges
+   it, as for a worker's PR. You add no labels.
+3. After the merge the task closes and its branch is removed from `origin`
+   and from your checkout, unless you have it checked out.
+
+- A PR whose CI fails before a review just waits for you to fix it; it does
+  not get `needs-human`.
+- Uncommitted changes in your checkout do not stop the run, since no worker
+  branches from it.
+- The dashboard header says `worker you`.
 
 ### You as the reviewer
 
