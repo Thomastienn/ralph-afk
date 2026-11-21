@@ -1,4 +1,4 @@
-// ralph-afk --pr [workers]: parallel PR mode. Each worker takes one ready task into its own worktree and
+// ralph-afk --pr: parallel PR mode. Each worker takes one ready task into its own worktree and
 // branch, opens a PR and waits for CI; one reviewer at a time reviews, fixes and squash-merges green PRs.
 // ralph-afk holds the checkout lock and starts this from the repository root. See docs/ralph.md.
 import { execFileSync, spawn } from 'node:child_process';
@@ -13,9 +13,6 @@ import { agentLabel, startTui } from './ralph-pr-tui.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
 const root = process.cwd();
 const { env } = process;
-// ralph-afk passes -a (space-separated, maybe empty) then the optional worker count.
-const only = (process.argv[2] ?? '').split(' ').filter(Boolean);
-const slots = Number(process.argv[3] ?? env.RALPH_PR_WORKERS ?? 3);
 const schedule = env.RALPH_AFK_SCHEDULE ?? '00-24=claude,codex';
 const waitMs = Number(env.RALPH_AFK_WAIT ?? 600) * 1000;
 const pollMs = Number(env.RALPH_PR_POLL ?? 120) * 1000;
@@ -45,18 +42,17 @@ const fail = message => { console.error(message); process.exit(1); };
 const labelled = (issue, ...names) => (issue.labels ?? []).some(label => names.includes(label));
 const show = id => { const out = attempt('bd', ['show', id, '--json']); return out && JSON.parse(out)[0]; };
 
-if (!Number.isInteger(slots) || slots < 1) fail('Usage: ralph-afk [-a agent,agent] --pr [workers]; workers is a whole number from 1.');
 for (const [stage, file] of Object.entries(prompts)) {
   if (!existsSync(file)) fail(`Missing ${file}: the ${stage} prompt for ralph-afk --pr.`);
 }
 // Workers share the worker lines with ralph-afk.
 const table = readFileSync(agentsFile, 'utf8').split('\n')
   .filter(line => line.trim() && !line.trimStart().startsWith('#'))
-  .map(line => { const [stage, agent, model, effort] = line.split('|'); return { stage, agent, model, effort: effort && effort !== '-' ? effort : null }; })
-  .filter(row => !only.length || only.includes(row.agent));
+  .map(line => { const [stage, agent, model, effort] = line.split('|'); return { stage, agent, model, effort: effort && effort !== '-' ? effort : null }; });
 for (const stage of Object.keys(prompts)) {
-  if (!table.some(row => row.stage === stage)) fail(`No ${stage} line in ${agentsFile}${only.length ? ` for -a ${only.join(',')}` : ''}.`);
+  if (!table.some(row => row.stage === stage)) fail(`No ${stage} line in ${agentsFile}.`);
 }
+const slots = Number(table.find(row => row.stage === 'workers')?.agent ?? 3); // ralph-afk checked workers|N
 
 // Same windows as ralph-afk: space-separated FROM-TO=agents in local hours.
 function scheduled() {

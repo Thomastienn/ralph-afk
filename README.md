@@ -10,7 +10,7 @@ of usage, they switch to another and wait for limits to reset.
 | --- | --- |
 | `ralph` | One headless Ralph run on one epic. |
 | `ralph-afk` | Works every ready epic, one task at a time, switching agents on usage limits. |
-| `ralph-afk --pr [N]` | N parallel workers, one PR per task; a reviewer agent merges once CI passes. |
+| `ralph-afk --pr` | Parallel workers, one PR per task; a reviewer agent merges once CI passes. |
 
 ## Requirements
 
@@ -70,6 +70,8 @@ In the project's checkout:
 ## Agents file
 
 One line per agent and stage: `stage|agent|model|effort`. See `agents.example`.
+The file is the only list of agents: comment a line out to stop using that
+agent.
 
 | Field | Meaning |
 | --- | --- |
@@ -79,6 +81,10 @@ One line per agent and stage: `stage|agent|model|effort`. See `agents.example`.
 | `effort` | Reasoning effort for `--pr` agents; `-` keeps the CLI default. Ignored by `ralph` and `ralph-afk`. |
 
 In `--pr` mode, line order within a stage is the fallback order.
+
+An optional `workers|N` line sets the number of `--pr` workers, a whole
+number from 1. The default is 3. `ralph` and `ralph-afk` without `--pr`
+ignore it, as they ignore `reviewer` lines.
 
 ### Which agents file is used
 
@@ -127,8 +133,6 @@ Start once, in tmux or with `nohup`:
 ```bash
 ralph-afk                          # every ready epic, oldest first
 ralph-afk my-epic other-epic       # only these, in this order
-ralph-afk -a codex                 # only Codex this run
-ralph-afk -a claude,codex my-epic
 RALPH_AFK_SCHEDULE='00-07=codex 07-24=claude,codex' ralph-afk
 ```
 
@@ -139,8 +143,8 @@ Each cycle:
 2. Picks the first epic with a ready or in-progress task. An open parentless
    issue blocking one of its tasks (e.g. a bug filed mid-task) moves under the
    epic so Ralph can work it.
-3. Probes the scheduled agents. It stays on the last agent used and switches
-   only when that agent stops answering.
+3. Probes the scheduled agents that have a `worker` line. It stays on the
+   last agent used and switches only when that agent stops answering.
 4. Runs `ralph --takeover --iterations 1` and waits.
 
 - Epics are re-read before every task, so new or unblocked epics join the
@@ -184,16 +188,18 @@ local hours, agents tried in order. The default is `00-24=claude,codex`.
 - No agent runs outside every window.
 - Split windows that cross midnight: `22-24=codex 00-06=codex`.
 - Read when a task starts; a running task is not interrupted at a boundary.
-- `-a` narrows the schedule; it does not replace it. An `-a` agent that is
-  unknown or in no window is refused at start.
+- An agent with no `worker` line is skipped. An agent other than `claude` or
+  `codex` is refused at start.
 
 ## ralph-afk --pr
 
 ```bash
-ralph-afk --pr           # 3 workers
-ralph-afk --pr 5
-ralph-afk -a codex --pr  # only Codex; needs a codex reviewer line
+ralph-afk --pr
 ```
+
+The agents file sets the worker count (`workers|N`, default 3) and the
+agents. For only Codex, comment out the Claude lines; Codex then needs a
+`reviewer` line too.
 
 Each worker takes a ready task into its own worktree and branch, opens a PR
 and waits for CI. One reviewer at a time reviews, fixes and squash-merges PRs
@@ -275,7 +281,6 @@ whose checks all passed. Needs `.ralph-tui/pr-worker.md` and
 | `RALPH_AFK_SCHEDULE` | `00-24=claude,codex` | Agents allowed per hour. |
 | `RALPH_AFK_WAIT` | `600` | Seconds before re-probing an agent with no known reset. |
 | `RALPH_<AGENT>_MODEL` | from agents file | Work model override for `ralph` and `ralph-afk`. |
-| `RALPH_PR_WORKERS` | `3` | `--pr` worker count when none is given. |
 | `RALPH_PR_POLL` | `120` | Seconds between `--pr` checks. |
 
 ## Workflow

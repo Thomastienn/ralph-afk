@@ -111,11 +111,19 @@ test('the schedule picks the agent for the hour and runs nothing outside its win
   assert.equal(gap.sleeps().length, 1);
 });
 
-test('an agent missing from the table never launches', () => {
-  const unknown = fixture();
-  const result = unknown.run({ RALPH_AFK_SCHEDULE: '00-24=nobody', FIXTURE_WAIT_ENDS_WORK: '1' });
+test('a scheduled agent with no worker line never launches; a schedule typo is refused at start', () => {
+  const f = fixture({ 'TreeTutor-sh8': 1 });
+  const table = join(f.cwd, 'codex-only');
+  writeFileSync(table, '# worker|claude|opus|-\nworker|codex|gpt-6.2-sol|-\n');
+  const result = f.run({ RALPH_AGENTS: table });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Unknown agent in RALPH_AFK_SCHEDULE: nobody/);
+  assert.deepEqual(f.runs(), ['run --headless --epic TreeTutor-sh8 --iterations 1 --agent codex --model gpt-6.2-sol']);
+  assert.ok(!f.read('probes').includes('claude'));
+
+  const unknown = fixture();
+  const refused = unknown.run({ RALPH_AFK_SCHEDULE: '00-24=claude,nobody' });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /Unknown agent in RALPH_AFK_SCHEDULE: nobody/);
   assert.deepEqual(unknown.runs(), []);
 });
 
@@ -131,7 +139,7 @@ test('an agents line with another stage, agent or field count is refused at star
   const f = fixture();
   const old = join(f.cwd, 'old-agents');
   // The retired ralph stage, an agent with no built-in probe, and the retired probe column.
-  for (const line of ['ralph|claude|opus|-', 'worker|cursor|auto|-', 'worker|claude|opus|-|echo pong']) {
+  for (const line of ['ralph|claude|opus|-', 'worker|cursor|auto|-', 'worker|claude|opus|-|echo pong', 'workers|0', 'workers|two']) {
     writeFileSync(old, `# comment\n\nworker|codex|m|-\n${line}\n`);
     const result = f.run({ RALPH_AGENTS: old });
     assert.equal(result.status, 1, line);
@@ -140,24 +148,18 @@ test('an agents line with another stage, agent or field count is refused at star
   assert.deepEqual(f.runs(), []);
 });
 
-test('-a limits the run to those agents; typos and unscheduled agents are refused at start', () => {
+test('the retired -a option is refused; sequential mode ignores a workers|N line', () => {
   const f = fixture({ 'TreeTutor-sh8': 1 });
-  const result = f.run({}, ['-a', 'codex', 'TreeTutor-sh8']);
+  const retired = f.run({}, ['-a', 'codex']);
+  assert.equal(retired.status, 2);
+  assert.match(retired.stderr, /^Usage: ralph-afk \[epic\.\.\.\] \| ralph-afk --pr$/m);
+  assert.deepEqual(f.runs(), []);
+
+  const table = join(f.cwd, 'counted');
+  writeFileSync(table, 'workers|5\nworker|codex|gpt-6.2-sol|-\n');
+  const result = f.run({ RALPH_AGENTS: table, RALPH_AFK_SCHEDULE: '00-24=codex' });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(f.runs(), ['run --headless --epic TreeTutor-sh8 --iterations 1 --agent codex --model gpt-6.2-sol']);
-  assert.ok(!f.read('probes').includes('claude'));
-
-  const unscheduled = fixture();
-  const refused = unscheduled.run({ RALPH_AFK_SCHEDULE: '00-24=claude' }, ['-a', 'claude,codex']);
-  assert.equal(refused.status, 1);
-  assert.match(refused.stderr, /codex is in no RALPH_AFK_SCHEDULE window/);
-  assert.deepEqual(unscheduled.runs(), []);
-
-  const typo = fixture();
-  const unknown = typo.run({}, ['-a', 'codx']);
-  assert.equal(unknown.status, 2);
-  assert.match(unknown.stderr, /Unknown agent: codx/);
-  assert.deepEqual(typo.runs(), []);
 });
 
 test('when an epic runs out of work it closes and the next ready epic starts', () => {

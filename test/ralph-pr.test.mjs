@@ -159,7 +159,9 @@ function fixture(issues) {
 
 test('workers open one PR per task, oldest epic first; one reviewer at a time merges them and cleans up', async () => {
   const f = fixture([epic('E2', '2026-01-02'), task('E2.1', 'E2'), epic('E1', '2026-01-01'), task('E1.1', 'E1'), task('E1.2', 'E1')]);
-  const result = await f.run({}, ['2']);
+  const table = join(f.base, 'agents');
+  writeFileSync(table, `workers|2\n${readFileSync(new URL('../agents.example', import.meta.url), 'utf8')}`);
+  const result = await f.run({ RALPH_AGENTS: table });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(f.claims(), ['update E1.1 --claim', 'update E1.2 --claim', 'update E2.1 --claim']);
   assert.deepEqual(f.read('merges'), ['1', '2', '3']);
@@ -247,18 +249,24 @@ test('with Claude out of usage a Codex worker takes the task; the reviewer waits
   assert.deepEqual(rest, []);
 });
 
-test('-a limits workers and the reviewer to those agents; a stage left with none is refused', async () => {
+test('only agents with a line in the agents file run; a stage with no line, or a worker count argument, is refused', async () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1')]);
   const table = join(f.base, 'agents');
-  writeFileSync(table, ['claude', 'codex'].flatMap(agent => [`worker|${agent}|w|-`, `reviewer|${agent}|r|-`]).join('\n'));
-  const result = await f.run({ RALPH_AGENTS: table }, ['-a', 'codex']);
+  writeFileSync(table, ['claude', 'codex'].flatMap(agent => [`worker|${agent}|w|-`, `reviewer|${agent}|r|-`]).map(line => line.includes('claude') ? `# ${line}` : line).join('\n'));
+  const result = await f.run({ RALPH_AGENTS: table });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const agents = f.read('agents');
   assert.deepEqual(agents.map(line => line.split(' ').slice(0, 6).join(' ')), ['codex E1.1 exec --approve-for-me -m w', 'codex E1.1 exec --approve-for-me -m r']);
 
-  const refused = await fixture([epic('E1'), task('E1.1', 'E1')]).run({}, ['-a', 'codex']);
+  const g = fixture([epic('E1'), task('E1.1', 'E1')]);
+  writeFileSync(table, 'worker|codex|w|-\n');
+  const refused = await g.run({ RALPH_AGENTS: table });
   assert.equal(refused.status, 1);
-  assert.match(refused.stderr, /No reviewer line in .* for -a codex/);
+  assert.match(refused.stderr, /No reviewer line in /);
+
+  const counted = await fixture([epic('E1'), task('E1.1', 'E1')]).run({}, ['2']);
+  assert.equal(counted.status, 2);
+  assert.match(counted.stderr, /^Usage: ralph-afk \[epic\.\.\.\] \| ralph-afk --pr$/m);
 });
 
 test('a task whose worker keeps failing gets needs-human after 3 tries while other work merges', async () => {
