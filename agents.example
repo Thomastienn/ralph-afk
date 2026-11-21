@@ -10,6 +10,8 @@
 # In --pr mode, line order within a stage is the fallback order.
 # RALPH_AFK_SCHEDULE decides which agents may run in each hour; comment a line out to stop using that agent.
 # workers|N: the number of --pr workers (default 3); sequential mode ignores it.
+# reviewer|human: you review --pr PRs on GitHub: merge to accept, comment to have the worker fix them.
+#   The other reviewer lines are then ignored. Sequential mode ignores it.
 
 worker|claude|sonnet|high
 worker|codex|gpt-6.2-sol|medium

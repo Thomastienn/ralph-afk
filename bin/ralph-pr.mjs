@@ -2,6 +2,7 @@
 // branch, opens a PR and waits for CI; one reviewer at a time reviews, fixes and squash-merges green PRs.
 // ralph-afk holds the checkout lock and starts this from the repository root. See docs/ralph.md.
 import { execFileSync, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -53,6 +54,8 @@ for (const stage of Object.keys(prompts)) {
   if (!table.some(row => row.stage === stage)) fail(`No ${stage} line in ${agentsFile}.`);
 }
 const slots = Number(table.find(row => row.stage === 'workers')?.agent ?? 3); // ralph-afk checked workers|N
+// reviewer|human: the owner reviews and merges on GitHub; the other reviewer lines are ignored.
+const human = table.some(row => row.stage === 'reviewer' && row.agent === 'human');
 
 // Same windows as ralph-afk: space-separated FROM-TO=agents in local hours.
 function scheduled() {
@@ -79,23 +82,31 @@ const pick = stage => table.find(row => row.stage === stage && scheduled().inclu
 const down = agent => probed.set(agent, { ok: false, until: Date.now() + waitMs });
 
 const commonGit = run('git', ['rev-parse', '--path-format=absolute', '--git-common-dir']);
-function command(row, prompt) {
+function command(row, prompt, session, resuming) {
   const { effort } = row;
   if (row.agent === 'claude') {
-    return ['claude', ['-p', '--permission-mode', 'auto', '--model', row.model, ...(effort ? ['--effort', effort] : []), prompt]];
+    return ['claude', ['-p', '--permission-mode', 'auto', '--model', row.model, ...(effort ? ['--effort', effort] : []), resuming ? '--resume' : '--session-id', session, prompt]];
   }
   // Commits and bd writes land in the main checkout's .git and .beads, outside the worktree sandbox.
   const roots = JSON.stringify([commonGit, join(root, '.beads')]);
   return ['codex', ['exec', '--approve-for-me', '-m', row.model, ...(effort ? ['-c', `model_reasoning_effort="${effort}"`] : []),
-    '-c', `sandbox_workspace_write.writable_roots=${roots}`, '-c', 'sandbox_workspace_write.network_access=true', prompt]];
+    '-c', `sandbox_workspace_write.writable_roots=${roots}`, '-c', 'sandbox_workspace_write.network_access=true', ...(resuming ? ['resume', session] : []), prompt]];
 }
 const running = new Set();
-function launch(row, stage, name, cwd, facts) {
-  // GitHub runs no CI on a conflicting PR and a reviewer starts only after CI passed, so an agent waiting on it waits forever.
-  const catchUp = `Before every wait on CI: when \`gh pr view <branch> --json mergeable\` says CONFLICTING, run \`git fetch origin ${base}\` and \`git merge origin/${base}\`, resolve the conflicts, commit and push. UNKNOWN means GitHub is still computing it: ask again after a few seconds.`;
-  const prompt = `${readFileSync(prompts[stage], 'utf8')}\n\n## This run\n\n${facts.join('\n')}\n\n${catchUp}\n`;
-  const [bin, args] = command(row, prompt);
-  const out = openSync(join(logs, `${name}.log`), 'a');
+// GitHub runs no CI on a conflicting PR and a reviewer starts only after CI passed, so an agent waiting on it waits forever.
+const catchUp = () => `Before every wait on CI: when \`gh pr view <branch> --json mergeable\` says CONFLICTING, run \`git fetch origin ${base}\` and \`git merge origin/${base}\`, resolve the conflicts, commit and push. UNKNOWN means GitHub is still computing it: ask again after a few seconds.`;
+const brief = (stage, facts) => `${readFileSync(prompts[stage], 'utf8')}\n\n## This run\n\n${facts.join('\n')}\n\n${catchUp()}\n`;
+// resume: { message } replaces the prompt; with an id too, it goes to that existing session.
+function launch(row, stage, name, cwd, facts, resume) {
+  const prompt = resume?.message ?? brief(stage, facts);
+  // Claude takes its session id up front; Codex's is read from its session file afterwards.
+  const session = resume?.id ?? randomUUID();
+  const [bin, args] = command(row, prompt, session, Boolean(resume?.id));
+  const logFile = join(logs, `${name}.log`);
+  // A task's log and a resumed session file already hold earlier runs: show only this run's steps.
+  const file = row.agent === 'claude' ? join(claudeProjects, cwd.replace(/[^a-zA-Z0-9]/g, '-'), `${session}.jsonl`) : logFile;
+  const offset = existsSync(file) ? statSync(file).size : 0;
+  const out = openSync(logFile, 'a');
   // detached: Ctrl+C in this terminal reaches only the supervisor, never a running agent.
   // The watcher ends the agent's group once this supervisor is gone, even after kill -9 or a closed terminal.
   const watch = `(while kill -0 ${process.pid} 2>/dev/null; do sleep 2; done; kill -TERM 0) & w=$!; "$@"; s=$?; kill $w 2>/dev/null; exit $s`;
@@ -103,7 +114,7 @@ function launch(row, stage, name, cwd, facts) {
   closeSync(out);
   let slot = 1; // a panel keeps its number while its agent runs
   while ([...running].some(job => job.slot === slot)) slot++;
-  const job = { slot, steps: [], stage, name, agent: row.agent, model: row.model, effort: row.effort, cwd, offset: 0, started: Date.now(), child, ...Object.fromEntries(facts.map(fact => [fact.slice(0, fact.indexOf(': ')), fact.slice(fact.indexOf(': ') + 2)])) };
+  const job = { slot, steps: [], stage, name, agent: row.agent, model: row.model, effort: row.effort, cwd, file, offset, session: row.agent === 'claude' ? session : null, started: Date.now(), child, ...Object.fromEntries(facts.map(fact => [fact.slice(0, fact.indexOf(': ')), fact.slice(fact.indexOf(': ') + 2)])) };
   job.done = new Promise(resolve => {
     child.on('exit', code => resolve((job.code = code ?? 1)));
     child.on('error', error => { log(`Could not start ${bin}: ${error.message}`); resolve((job.code = 127)); });
@@ -116,14 +127,6 @@ function launch(row, stage, name, cwd, facts) {
 // Each agent's steps stream here as they happen. `claude -p` writes its log only at exit, so Claude's steps
 // come from its live session transcript; Codex writes its own steps to the log as it goes.
 const claudeProjects = join(env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects');
-function transcript(job) {
-  const dir = join(claudeProjects, job.cwd.replace(/[^a-zA-Z0-9]/g, '-'));
-  if (!existsSync(dir)) return null;
-  // The reviewer worktree is reused, so only a transcript written since this job started counts.
-  return readdirSync(dir).filter(name => name.endsWith('.jsonl')).map(name => join(dir, name))
-    .map(file => ({ file, time: statSync(file).mtimeMs })).filter(entry => entry.time >= job.started)
-    .sort((a, b) => b.time - a.time)[0]?.file ?? null;
-}
 const firstLine = text => String(text ?? '').trim().split('\n')[0];
 function claudeSteps(text, job) {
   let entry;
@@ -148,8 +151,7 @@ function newLines(job, key, file) {
   return fresh.subarray(0, end).toString('utf8').split('\n');
 }
 function progress(job) {
-  job.file ??= job.agent === 'claude' ? transcript(job) : join(logs, `${job.name}.log`);
-  if (!job.file || !existsSync(job.file)) return;
+  if (!existsSync(job.file)) return;
   // shortcut: Codex lines are printed raw, its echoed prompt and command output included; parse its session file if that is too noisy.
   for (const text of newLines(job, 'offset', job.file)) {
     for (const step of job.agent === 'claude' ? claudeSteps(text, job) : [text.trim()]) {
@@ -172,9 +174,9 @@ function codexSession(job) {
 }
 function codexContext(job) {
   if (job.agent !== 'codex') return;
-  job.session ??= codexSession(job);
-  if (!job.session) return;
-  for (const text of newLines(job, 'sessionOffset', job.session)) {
+  job.sessionFile ??= codexSession(job);
+  if (!job.sessionFile) return;
+  for (const text of newLines(job, 'sessionOffset', job.sessionFile)) {
     if (!text.includes('"token_count"')) continue;
     // input_tokens already counts the cached ones.
     try { job.context = JSON.parse(text).payload?.info?.last_token_usage?.input_tokens ?? job.context; } catch {}
@@ -186,6 +188,11 @@ setInterval(() => { for (const job of running) { progress(job); codexContext(job
 const triesFile = join(logs, 'tries.json');
 const tries = new Map(Object.entries(existsSync(triesFile) ? JSON.parse(readFileSync(triesFile, 'utf8')) : {}));
 const saveTries = () => writeFileSync(triesFile, JSON.stringify(Object.fromEntries(tries)));
+// reviewer|human: task -> { agent, model, effort, id, since }, the session to resume with the owner's review. Only reviews
+// and comments after since are new: the worker's end, or a fix's start, so one posted while a fix runs gets its own fix.
+const sessionsFile = join(logs, 'sessions.json');
+const sessions = existsSync(sessionsFile) ? JSON.parse(readFileSync(sessionsFile, 'utf8')) : {};
+const saveSessions = () => writeFileSync(sessionsFile, JSON.stringify(sessions));
 // A task or PR that keeps failing waits for the owner instead of spinning.
 function failed(id, what) {
   const n = (tries.get(id) ?? 0) + 1;
@@ -268,7 +275,19 @@ function pushBase() {
 }
 function workerDone(job) {
   const task = show(job.Task);
-  if (task && (task.status === 'closed' || labelled(task, 'in-review'))) return log(`${job.Task}: PR in review.`);
+  // A fix run keeps in-review on, so only its exit code says whether it finished.
+  if (task && (task.status === 'closed' || labelled(task, 'in-review')) && !(job.fix && job.code)) {
+    log(`${job.Task}: PR in review.`);
+    if (human && task.status !== 'closed') hold(job);
+    return;
+  }
+  if (job.fix) {
+    log(`${job.Task}: ${job.agent} exited with ${job.code} before fixing the review; a fresh agent tries next.`);
+    if (Date.now() - job.started < 120000) down(job.agent);
+    sessions[job.Task].id = null;
+    saveSessions();
+    return failed(job.Task, 'fixing the review');
+  }
   if (task && labelled(task, 'needs-human')) {
     attempt('bd', ['unclaim', job.Task]);
     return log(`${job.Task} needs a human; other work continues.`);
@@ -279,9 +298,35 @@ function workerDone(job) {
   failed(job.Task, 'the worker');
 }
 
+// The PR waits for the owner's review: keep the worker's session for it, compacted so a fix starts from a short context.
+function hold(job) {
+  if (job.agent === 'codex') job.sessionFile ??= codexSession(job);
+  // A Codex session file starts with its session_meta line, which holds the id.
+  const id = job.session ?? (job.sessionFile ? JSON.parse(readFileSync(job.sessionFile, 'utf8').split('\n', 1)[0]).payload?.id : null);
+  sessions[job.Task] = { agent: job.agent, model: job.model, effort: job.effort, id, since: new Date(job.fix ? job.started : Date.now()).toISOString() };
+  saveSessions();
+  log(`${job.Task}: waiting for your review on GitHub.`);
+  // shortcut: only Claude is compacted; codex exec resume <id> /compact is untested. Codex compacts itself near its limit.
+  if (job.agent !== 'claude') return;
+  launch(job, 'worker', job.Task, job.cwd, [`Task: ${job.Task}`, `Title: ${job.Title}`], { id, message: '/compact' }).compact = true;
+}
+function compactDone(job) {
+  log(job.code ? `${job.Task}: could not compact the session (exit ${job.code}); a fix resumes it as it is.` : `${job.Task}: session compacted.`);
+}
+// The owner reviewed or commented since the last run: the same session fixes it; a fresh worker if that agent cannot run.
+function startFix(pr, held) {
+  const ask = `The owner reviewed PR #${pr.number} on GitHub after ${held.since}. Read what they wrote since then: \`gh pr view ${pr.number} --comments\` and the inline comments from \`gh api repos/{owner}/{repo}/pulls/${pr.number}/comments\`. Do what they ask, commit and push, then wait for CI until it passes, as before. Do not merge, and do not comment on or review the PR: the owner's next comment starts the next fix. ${catchUp()}`;
+  const facts = [`Task: ${pr.task.id}`, `Title: ${pr.task.title}`, `Branch: ${pr.headRefName}`, `Base: ${base}`];
+  const same = held.id && scheduled().includes(held.agent) && usable(held);
+  const row = same ? held : pick('worker');
+  if (!row) return log(`No worker agent available now to fix your review of PR #${pr.number}.`);
+  const resume = same ? { id: held.id, message: ask } : { message: `${brief('worker', facts)}\n${ask}\n` };
+  launch(row, 'worker', pr.task.id, join(trees, pr.task.id), facts, resume).fix = true;
+}
+
 // Open PRs whose branch is a Beads task still open here, oldest first.
 function taskPrs() {
-  return json('gh', ['pr', 'list', '--state', 'open', '--limit', '100', '--json', 'number,headRefName,title,statusCheckRollup'])
+  return json('gh', ['pr', 'list', '--state', 'open', '--limit', '100', '--json', `number,headRefName,title,statusCheckRollup${human ? ',reviews,comments' : ''}`])
     .map(pr => ({ ...pr, task: show(pr.headRefName) }))
     .filter(pr => pr.task && pr.task.status !== 'closed')
     .sort((a, b) => a.number - b.number);
@@ -321,6 +366,7 @@ function merged(id, number) {
   attempt('git', ['branch', '-D', id]);
   attempt('git', ['push', '-q', 'origin', '--delete', id]); // GitHub keeps merged branches unless asked
   if (tries.delete(id)) saveTries();
+  if (delete sessions[id]) saveSessions();
   log(`Merged PR #${number} (${id}).`);
   pull();
   if (++merges % SLOW_EVERY === 0) dispatchSlow();
@@ -416,7 +462,7 @@ function prState(pr, jobs) {
 function dashboard() {
   const jobs = [...running].sort((a, b) => a.slot - b.slot);
   const workers = jobs.filter(job => job.stage === 'worker').length;
-  const reviewer = jobs.some(job => job.stage === 'reviewer') ? 'busy' : 'free';
+  const reviewer = human ? 'you' : jobs.some(job => job.stage === 'reviewer') ? 'busy' : 'free';
   return {
     header: [base, `${workers}/${slots} workers busy`, `reviewer ${reviewer}`, `${latest.waiting} ready`, `${merges} merged`,
       ...(idle ? ['out of work'] : []), ...(stopping ? ['stopping'] : [])],
@@ -429,7 +475,7 @@ let idle = false;
 let shown = 0; // when the last status block printed
 let latest = { prs: [], waiting: 0 }; // the last check, for the dashboard
 if (process.stdin.isTTY && process.stdout.isTTY) screen = startTui(dashboard, interrupt);
-log(`PR mode on ${base}: up to ${slots} workers, one reviewer.`);
+log(`PR mode on ${base}: up to ${slots} workers, ${human ? 'you review on GitHub' : 'one reviewer'}.`);
 // One pass over the queue; true once a requested stop has nothing left running.
 function poll() {
   const closed = JSON.parse(attempt('bd', ['epic', 'close-eligible', '--json']) ?? '{}').closed ?? [];
@@ -447,12 +493,20 @@ function poll() {
   const prs = open.filter(pr => !labelled(pr.task, 'needs-human'));
   const reviewing = [...running].some(job => job.stage === 'reviewer');
   // A worker labels a PR in-review only on green CI; one that is red anyway waits for the owner.
-  for (const pr of prs.filter(pr => labelled(pr.task, 'in-review') && settled(pr) && !passed(pr) && !reviewed.has(pr.number))) {
+  const busy = pr => [...running].some(job => job.Task === pr.task.id);
+  for (const pr of prs.filter(pr => labelled(pr.task, 'in-review') && settled(pr) && !passed(pr) && !reviewed.has(pr.number) && !busy(pr))) {
     attempt('bd', ['update', pr.task.id, '--add-label', 'needs-human']);
     attempt('bd', ['note', pr.task.id, `ralph-afk --pr: PR #${pr.number} is in review but its CI failed.`]);
     log(`PR #${pr.number} is in review but its CI failed; labelled needs-human. Remove in-review too to hand it back to a worker.`);
   }
-  const next = prs.find(pr => labelled(pr.task, 'in-review') && settled(pr) && (passed(pr) || reviewed.has(pr.number)));
+  for (const pr of human && !stopping ? prs.filter(pr => labelled(pr.task, 'in-review') && !busy(pr)) : []) {
+    // In review before this run started: only what comes after now is new.
+    if (!sessions[pr.task.id]) { sessions[pr.task.id] = { since: new Date().toISOString() }; saveSessions(); }
+    const held = sessions[pr.task.id];
+    const since = Date.parse(held.since);
+    if ([...pr.reviews, ...pr.comments].some(item => item.state !== 'PENDING' && Date.parse(item.submittedAt ?? item.createdAt) > since)) startFix(pr, held);
+  }
+  const next = !human && prs.find(pr => labelled(pr.task, 'in-review') && settled(pr) && (passed(pr) || reviewed.has(pr.number)));
   if (!stopping && !reviewing && next) {
     const row = pick('reviewer');
     if (row) startReview(next, row);
@@ -485,7 +539,7 @@ for (;;) {
     if (job.code === undefined) continue;
     running.delete(job);
     progress(job);
-    (job.stage === 'worker' ? workerDone : reviewDone)(job);
+    (job.compact ? compactDone : job.stage === 'worker' ? workerDone : reviewDone)(job);
   }
 }
 

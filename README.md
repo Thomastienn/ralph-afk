@@ -10,7 +10,7 @@ of usage, they switch to another and wait for limits to reset.
 | --- | --- |
 | `ralph` | One headless Ralph run on one epic. |
 | `ralph-afk` | Works every ready epic, one task at a time, switching agents on usage limits. |
-| `ralph-afk --pr` | Parallel workers, one PR per task; a reviewer agent merges once CI passes. |
+| `ralph-afk --pr` | Parallel workers, one PR per task; a reviewer agent, or you, merges once CI passes. |
 
 ## Requirements
 
@@ -85,6 +85,11 @@ In `--pr` mode, line order within a stage is the fallback order.
 An optional `workers|N` line sets the number of `--pr` workers, a whole
 number from 1. The default is 3. `ralph` and `ralph-afk` without `--pr`
 ignore it, as they ignore `reviewer` lines.
+
+A `reviewer|human` line means you review the `--pr` PRs on GitHub yourself;
+see [You as the reviewer](#you-as-the-reviewer). The other `reviewer` lines
+are then ignored, so commenting out `reviewer|human` brings the AI reviewer
+back.
 
 ### Which agents file is used
 
@@ -272,6 +277,33 @@ whose checks all passed. Needs `.ralph-tui/pr-worker.md` and
 - Ctrl+C: as in sequential mode.
 - When the supervisor dies any other way (`kill -9`, a closed terminal), each
   running agent and its child processes get SIGTERM within 2 s.
+
+### You as the reviewer
+
+With a `reviewer|human` line in the agents file, no reviewer agent runs:
+
+1. A worker works until CI passes and labels the task `in-review`, as usual.
+2. The supervisor compacts the worker's Claude session (`/compact`), so later
+   fixes start from a short context. Codex sessions are not compacted; Codex
+   compacts itself near its limit.
+3. The PR waits for you on GitHub. The dashboard header says `reviewer you`.
+4. To accept it, merge it on GitHub. The task closes at the next check, and
+   its branch and worktree are removed, as after an agent's merge.
+5. To ask for changes, leave a review or comment on the PR. GitHub does not
+   let you request changes on a PR opened with your own login, so a comment
+   is enough. At the next check, the supervisor resumes the same worker
+   session with your comments. It fixes them, pushes, waits for CI and goes
+   back to step 2.
+
+- Only comments newer than the last run count: newer than the worker's end,
+  or than a fix's start. A comment posted while a fix runs gets its own fix.
+- When the worker's agent cannot run now (limit, schedule) or its session
+  failed to resume, a fresh worker gets the task prompt plus your comments.
+- A fix that exits with an error counts as a failed run, as for workers. A fix
+  that leaves CI red gets `needs-human`.
+- Sessions are kept in `.ralph-tui/pr-logs/sessions.json`, so a restart still
+  resumes them. A PR already in review when the run starts waits for your next
+  comment and gets a fresh worker.
 
 ## Environment variables
 

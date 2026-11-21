@@ -55,7 +55,7 @@ if (process.env.FIXTURE_GH_FLAKY && args[0] === 'pr' && args[1] === 'list' && !f
 switch (args.slice(0, 2).join(' ')) {
   case 'repo view': out({ defaultBranchRef: { name: 'master' } }); break;
   case 'pr create':
-    prs.push({ number: prs.length + 1, headRefName: flag('--head'), title: flag('--title'), state: 'OPEN', statusCheckRollup: [{ status: 'COMPLETED', conclusion: (process.env.FIXTURE_RED || '').split(' ').includes(flag('--head')) ? 'FAILURE' : 'SUCCESS' }] });
+    prs.push({ number: prs.length + 1, headRefName: flag('--head'), title: flag('--title'), state: 'OPEN', reviews: [], comments: [], statusCheckRollup: [{ status: 'COMPLETED', conclusion: (process.env.FIXTURE_RED || '').split(' ').includes(flag('--head')) ? 'FAILURE' : 'SUCCESS' }] });
     write('prs.json', prs); break;
   case 'pr list': out(prs.filter(pr => (flag('--state') === 'all' || pr.state === 'OPEN') && (!args.includes('--head') || pr.headRefName === flag('--head')))); break;
   case 'pr fail': prs[args[2] - 1].statusCheckRollup[0].conclusion = 'FAILURE'; write('prs.json', prs); break; // fixture only: CI goes red
@@ -75,19 +75,26 @@ if [[ $* == *'Reply with exactly: pong'* && $* != *'## This run'* ]]; then
   echo pong; exit
 fi
 task=$(sed -n 's/^Task: //p' <<< "$prompt")
+for ((i = 1; i < $#; i++)); do j=$((i + 1)); [[ \${!i} != --session-id && \${!i} != --resume ]] || session=\${!j}; done
 echo "${name} $task \${*:1:$#-1}" >> "$FIX/agents"
 printf '%s\\n' "$prompt" >> "$FIX/prompts"
 # A Claude session transcript, as the real CLI keeps one per working directory.
 if [[ ${name} == claude ]]; then
   d="$CLAUDE_CONFIG_DIR/projects/$(pwd | sed 's/[^a-zA-Z0-9]/-/g')"; mkdir -p "$d"
   printf '%s\\n' '{"type":"assistant","message":{"usage":{"input_tokens":1000,"cache_read_input_tokens":1500,"cache_creation_input_tokens":500},"content":[{"type":"tool_use","name":"Bash","input":{"description":"Run tests"}}]}}' \
-    '{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"content":"boom"}]}}' > "$d/$$.jsonl"
+    '{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"content":"boom"}]}}' >> "$d/$session.jsonl"
 fi
 # A Codex session file, as the real CLI keeps one per run under its dated sessions folder.
 if [[ ${name} == codex ]]; then
   d="$CODEX_HOME/sessions/$(date +%Y/%m/%d)"; mkdir -p "$d"
   printf '%s\\n' "{\\"type\\":\\"session_meta\\",\\"payload\\":{\\"cwd\\":\\"$(pwd)\\"}}" \
     '{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":5200,"cached_input_tokens":5000}}}}' > "$d/rollout-$$.jsonl"
+fi
+if [[ $prompt == /compact ]]; then echo "$session" >> "$FIX/compacts"; exit; fi
+# A fix for the owner's review: one more commit on the PR branch.
+if [[ $prompt == *'The owner reviewed PR #'* ]]; then
+  echo fix >> fix.txt && git add fix.txt && git commit -qm fix && git push -q origin HEAD
+  echo "$session" >> "$FIX/fixes"; exit
 fi
 if [[ $prompt == *'PR: #'* ]]; then
   [[ ! -e "$FIX/reviewing" ]] || echo overlap >> "$FIX/overlap"
@@ -177,9 +184,9 @@ test('workers open one PR per task, oldest epic first; one reviewer at a time me
   assert.equal(execFileSync('git', ['branch', '--all', '--list', '*E*'], { cwd: f.cwd, encoding: 'utf8' }), '');
   assert.equal(execFileSync('git', ['ls-remote', '--heads', 'origin'], { cwd: f.cwd, encoding: 'utf8' }).match(/refs\/heads\/E/g), null);
   const agents = f.read('agents');
-  assert.ok(agents.filter(line => / E\d\.\d -p --permission-mode auto --model sonnet --effort high$/.test(line)).length === 3, agents.join('\n'));
+  assert.ok(agents.filter(line => / E\d\.\d -p --permission-mode auto --model sonnet --effort high --session-id [0-9a-f-]{36}$/.test(line)).length === 3, agents.join('\n'));
   // The fake reviewer reads the task line too, so match the reviewer's model instead.
-  assert.equal(agents.filter(line => line.endsWith('-p --permission-mode auto --model opus --effort high')).length, 3, agents.join('\n'));
+  assert.equal(agents.filter(line => / -p --permission-mode auto --model opus --effort high --session-id [0-9a-f-]{36}$/.test(line)).length, 3, agents.join('\n'));
   assert.match(result.stdout, /Out of work\. Checking for new tasks every 0\.05s/);
   assert.match(result.stdout, /Status: \d of 2 workers busy, reviewer (busy|free); \d ready tasks waiting; \d merged this run\.\n {2}worker E\d\.\d \(claude sonnet high( 3k ctx)?, 0m\): /);
   assert.match(result.stdout, /\n {2}PR #1 E1\.1( \[in-review\])?: CI passed/);
@@ -338,6 +345,42 @@ test('a reviewer whose fix turns CI red keeps the PR and runs again', async () =
   assert.ok(!f.issue('E1.1').labels.includes('needs-human'));
   assert.equal(f.issue('E1.1').status, 'closed');
   assert.equal(f.read('agents').filter(line => /^claude E1\.1 .*--model opus/.test(line)).length, 2);
+});
+
+test('reviewer|human: the worker session is compacted and waits; your review is fixed in that session; your merge closes the task', async () => {
+  const f = fixture([epic('E1'), task('E1.1', 'E1')]);
+  const table = join(f.base, 'agents');
+  writeFileSync(table, 'worker|claude|sonnet|high\nreviewer|claude|opus|high\nreviewer|human\n');
+  // As GitHub: the owner comments on the PR, later merges it. Renamed in, so the fake gh never reads half a file.
+  const edit = change => {
+    const prs = JSON.parse(readFileSync(join(f.fix, 'prs.json'), 'utf8'));
+    change(prs[0]);
+    writeFileSync(join(f.fix, 'prs.new'), JSON.stringify(prs));
+    renameSync(join(f.fix, 'prs.new'), join(f.fix, 'prs.json'));
+  };
+  let step = 0;
+  const result = await f.run({ RALPH_AGENTS: table }, [], out => {
+    const compacted = (out.match(/E1\.1: session compacted\./g) ?? []).length;
+    if (step === 0 && compacted === 1) { step = 1; edit(pr => pr.reviews.push({ state: 'COMMENTED', body: 'Rename it.', submittedAt: new Date().toISOString() })); }
+    if (step === 1 && compacted === 2) { step = 2; edit(pr => { pr.state = 'MERGED'; }); }
+    return /Out of work/.test(out);
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(step, 2, result.stdout);
+  const agents = f.read('agents');
+  const [session] = agents[0].match(/(?<=--session-id )\S+/) ?? [];
+  assert.ok(session, agents.join('\n'));
+  // Worker, compact, fix, compact: one Claude session, and never the AI reviewer.
+  assert.deepEqual(agents.map(line => line.match(/--(session-id|resume) \S+/)[0]), [`--session-id ${session}`, ...Array(3).fill(`--resume ${session}`)]);
+  assert.ok(agents.every(line => line.includes('--model sonnet')), agents.join('\n'));
+  assert.deepEqual(f.read('compacts'), [session, session]);
+  assert.deepEqual(f.read('fixes'), [session]);
+  assert.match(readFileSync(join(f.fix, 'prompts'), 'utf8'), /The owner reviewed PR #1 on GitHub after .*`gh pr view 1 --comments`/);
+  assert.match(result.stdout, /you review on GitHub/);
+  assert.match(result.stdout, /E1\.1: waiting for your review on GitHub\./);
+  assert.match(result.stdout, /Merged PR #1 \(E1\.1\)\./);
+  assert.deepEqual(f.read('merges'), []);
+  assert.equal(f.issue('E1.1').status, 'closed');
 });
 
 test('out of work, --pr keeps checking: a task filed later runs on the planning commits made since', async () => {
