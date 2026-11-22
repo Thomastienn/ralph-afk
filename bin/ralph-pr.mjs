@@ -1,13 +1,14 @@
 // ralph-afk --pr: parallel PR mode. Each worker takes one ready task into its own worktree and
 // branch, opens a PR and waits for CI; one reviewer at a time reviews, fixes and squash-merges green PRs.
 // ralph-afk holds the checkout lock and starts this from the repository root. See docs/ralph.md.
-import { execFileSync, spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { promisify } from 'node:util';
 import { probe } from './ralph-probe.mjs';
 import { agentLabel, startTui } from './ralph-pr-tui.mjs';
 
@@ -37,15 +38,15 @@ const log = message => {
   if (events.push(`${new Date().toLocaleTimeString('sv')} ${message}`) > 200) events.shift();
   screen.draw();
 };
-const run = (command, args, options = {}) =>
-  execFileSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...options }).trim();
-const attempt = (command, args, options) => {
-  try { return run(command, args, options); } catch { return null; }
-};
-const json = (command, args) => JSON.parse(run(command, args) || 'null');
+// Async, so keys and signals are handled while gh, bd or git runs: q and Ctrl+C answer at once.
+const execFileAsync = promisify(execFile);
+const run = async (command, args, options = {}) =>
+  (await execFileAsync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...options })).stdout.trim();
+const attempt = (command, args, options) => run(command, args, options).catch(() => null);
+const json = async (command, args) => JSON.parse(await run(command, args) || 'null');
 const fail = message => { console.error(message); process.exit(1); };
 const labelled = (issue, ...names) => (issue.labels ?? []).some(label => names.includes(label));
-const show = id => { const out = attempt('bd', ['show', id, '--json']); return out && JSON.parse(out)[0]; };
+const show = async id => { const out = await attempt('bd', ['show', id, '--json']); return out && JSON.parse(out)[0]; };
 
 // Workers share the worker lines with ralph-afk.
 const table = readFileSync(agentsFile, 'utf8').split('\n')
@@ -72,20 +73,22 @@ function scheduled() {
   return [];
 }
 const probed = new Map(); // agent -> { ok, until }
-function usable(row) {
+async function usable(row) {
   const known = probed.get(row.agent);
   if (known && known.until > Date.now()) return known.ok;
-  const { ok, until } = probe(row.agent);
+  const { ok, until } = await probe(row.agent);
   // A limited agent is not probed before its reported reset; with none, it waits RALPH_AFK_WAIT.
   probed.set(row.agent, { ok, until: until || Date.now() + waitMs });
   if (!ok) log(`${row.agent} is not usable now (usage limit, auth or network).`);
   return ok;
 }
 // The first usable agent of the stage in table order.
-const pick = stage => table.find(row => row.stage === stage && scheduled().includes(row.agent) && usable(row));
+async function pick(stage) {
+  for (const row of table) if (row.stage === stage && scheduled().includes(row.agent) && await usable(row)) return row;
+}
 const down = agent => probed.set(agent, { ok: false, until: Date.now() + waitMs });
 
-const commonGit = run('git', ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+const commonGit = await run('git', ['rev-parse', '--path-format=absolute', '--git-common-dir']);
 function command(row, prompt, session, resuming) {
   const { effort } = row;
   if (row.agent === 'claude') {
@@ -201,50 +204,50 @@ const sessionsFile = join(logs, 'sessions.json');
 const sessions = existsSync(sessionsFile) ? JSON.parse(readFileSync(sessionsFile, 'utf8')) : {};
 const saveSessions = () => writeFileSync(sessionsFile, JSON.stringify(sessions));
 // A task or PR that keeps failing waits for the owner instead of spinning.
-function failed(id, what) {
+async function failed(id, what) {
   const n = (tries.get(id) ?? 0) + 1;
   if (n < TRIES) tries.set(id, n);
   else tries.delete(id); // the owner removing needs-human gives it TRIES fresh runs
   saveTries();
   if (n < TRIES) return;
-  attempt('bd', ['update', id, '--add-label', 'needs-human']);
-  attempt('bd', ['note', id, `ralph-afk --pr: ${what} failed ${n} times; see .ralph-tui/pr-logs/.`]);
+  await attempt('bd', ['update', id, '--add-label', 'needs-human']);
+  await attempt('bd', ['note', id, `ralph-afk --pr: ${what} failed ${n} times; see .ralph-tui/pr-logs/.`]);
   log(`${id} failed ${n} times; labelled needs-human.`);
 }
 
-const base = json('gh', ['repo', 'view', '--json', 'defaultBranchRef']).defaultBranchRef.name;
-const me = run('gh', ['api', 'user', '--jq', '.login']); // the owner: only this account's PRs and comments reach agents
+const base = (await json('gh', ['repo', 'view', '--json', 'defaultBranchRef'])).defaultBranchRef.name;
+const me = await run('gh', ['api', 'user', '--jq', '.login']); // the owner: only this account's PRs and comments reach agents
 const mine = item => (item.author ?? item.user)?.login === me && item.state !== 'PENDING';
 const reviewTree = join(trees, 'reviewer');
 mkdirSync(logs, { recursive: true });
 mkdirSync(trees, { recursive: true });
 // Workers never commit the Beads export, so the supervisor does, on the default branch only.
-function commitBeads(message) {
-  if (run('git', ['rev-parse', '--abbrev-ref', 'HEAD']) !== base || !run('git', ['status', '--porcelain', '--', '.beads/issues.jsonl'])) return;
-  if (attempt('git', ['commit', '-q', '-m', message, '--', '.beads/issues.jsonl']) !== null) log('Committed the Beads export.');
+async function commitBeads(message) {
+  if (await run('git', ['rev-parse', '--abbrev-ref', 'HEAD']) !== base || !await run('git', ['status', '--porcelain', '--', '.beads/issues.jsonl'])) return;
+  if (await attempt('git', ['commit', '-q', '-m', message, '--', '.beads/issues.jsonl']) !== null) log('Committed the Beads export.');
 }
 // Workers branch from origin, so uncommitted planning work would miss them. Never commit it blindly: it gets pushed.
 // With worker|human no worker branches here, and the owner's own work in progress may be in this checkout.
-commitBeads('chore(beads): export before ralph-afk --pr');
-const dirty = !humanWorker && run('git', ['status', '--porcelain', '--', '.', ':!.ralph-tui', ':!.beads/issues.jsonl']);
+await commitBeads('chore(beads): export before ralph-afk --pr');
+const dirty = !humanWorker && await run('git', ['status', '--porcelain', '--', '.', ':!.ralph-tui', ':!.beads/issues.jsonl']);
 if (dirty) fail(`Uncommitted changes; commit or stash them first:\n${dirty}`);
 // The owner's planning commits must reach GitHub before workers branch from it.
-try { run('git', ['push', '-q', 'origin', base], { stdio: ['ignore', 'pipe', 'inherit'] }); }
+try { await run('git', ['push', '-q', 'origin', base], { stdio: ['ignore', 'pipe', 'inherit'] }); }
 catch { fail(`Could not push local ${base} to origin; fix that first (diverged, or the pre-push secret scan refused).`); }
-run('git', ['fetch', '-q', 'origin']);
-if (!existsSync(reviewTree)) run('git', ['worktree', 'add', '-q', '--detach', reviewTree, `origin/${base}`]);
+await run('git', ['fetch', '-q', 'origin']);
+if (!existsSync(reviewTree)) await run('git', ['worktree', 'add', '-q', '--detach', reviewTree, `origin/${base}`]);
 // A previous run stopped mid-task: give its unfinished claims back.
 for (const id of readdirSync(trees).filter(name => name !== 'reviewer')) {
-  const task = show(id);
-  if (task?.status === 'in_progress' && !labelled(task, 'in-review')) attempt('bd', ['unclaim', id]);
+  const task = await show(id);
+  if (task?.status === 'in_progress' && !labelled(task, 'in-review')) await attempt('bd', ['unclaim', id]);
 }
 
 const reminded = new Set();
-function readyTasks() {
-  const epics = new Map(json('bd', ['ready', '--type', 'epic', '--sort', 'oldest', '--json', '--limit', '0'])
+async function readyTasks() {
+  const epics = new Map((await json('bd', ['ready', '--type', 'epic', '--sort', 'oldest', '--json', '--limit', '0']))
     .filter(epic => !labelled(epic, 'gate:backlog')).map((epic, index) => [epic.id, index]));
   // Parentless tasks (fixes filed mid-run) first, then by epic age; bd's own order within an epic.
-  return json('bd', ['ready', '--json', '--limit', '0'])
+  return (await json('bd', ['ready', '--json', '--limit', '0']))
     .filter(task => task.issue_type !== 'epic' && !labelled(task, 'gate:backlog', 'in-review', 'needs-human'))
     .filter(task => !task.parent || epics.has(task.parent))
     .filter(task => {
@@ -259,32 +262,32 @@ function readyTasks() {
 function borrowModules(path) {
   if (existsSync(join(root, 'node_modules')) && !existsSync(join(path, 'node_modules'))) symlinkSync(join(root, 'node_modules'), join(path, 'node_modules'));
 }
-function startWorker(task, row) {
-  if (attempt('bd', ['update', task.id, '--claim']) === null) return;
+async function startWorker(task, row) {
+  if (await attempt('bd', ['update', task.id, '--claim']) === null) return;
   const path = join(trees, task.id);
   try {
     if (!existsSync(path)) {
-      run('git', ['fetch', '-q', 'origin']);
-      pushBase();
-      const branch = attempt('git', ['rev-parse', '-q', '--verify', `refs/heads/${task.id}`]);
-      run('git', ['worktree', 'add', '-q', ...(branch ? [path, task.id] : ['-b', task.id, path, `origin/${base}`])]);
+      await run('git', ['fetch', '-q', 'origin']);
+      await pushBase();
+      const branch = await attempt('git', ['rev-parse', '-q', '--verify', `refs/heads/${task.id}`]);
+      await run('git', ['worktree', 'add', '-q', ...(branch ? [path, task.id] : ['-b', task.id, path, `origin/${base}`])]);
     }
     borrowModules(path);
   } catch (error) {
     log(`Could not make the worktree for ${task.id}: ${error.stderr || error.message}`);
-    attempt('bd', ['unclaim', task.id]);
+    await attempt('bd', ['unclaim', task.id]);
     return failed(task.id, 'making the worktree');
   }
   launch(row, 'worker', task.id, path, [`Task: ${task.id}`, `Title: ${task.title}`, `Branch: ${task.id}`, `Base: ${base}`]);
 }
 // A task added while this runs may come with planning commits; workers branch from origin, so push them first.
-function pushBase() {
-  if (run('git', ['rev-list', '--count', `origin/${base}..${base}`]) === '0') return;
-  if (attempt('git', ['push', '-q', 'origin', base]) !== null) return log(`Pushed the new commits on ${base} to origin.`);
+async function pushBase() {
+  if (await run('git', ['rev-list', '--count', `origin/${base}..${base}`]) === '0') return;
+  if (await attempt('git', ['push', '-q', 'origin', base]) !== null) return log(`Pushed the new commits on ${base} to origin.`);
   log(`Could not push local ${base} to origin; workers branch from origin/${base} without its new commits.`);
 }
-function workerDone(job) {
-  const task = show(job.Task);
+async function workerDone(job) {
+  const task = await show(job.Task);
   // A fix run keeps in-review on, so only its exit code says whether it finished.
   if (task && (task.status === 'closed' || labelled(task, 'in-review')) && !(job.fix && job.code)) {
     log(`${job.Task}: PR in review.`);
@@ -299,13 +302,13 @@ function workerDone(job) {
     return failed(job.Task, 'fixing the review');
   }
   if (task && labelled(task, 'needs-human')) {
-    attempt('bd', ['unclaim', job.Task]);
+    await attempt('bd', ['unclaim', job.Task]);
     return log(`${job.Task} needs a human; other work continues.`);
   }
   log(`${job.Task}: ${job.agent} exited with ${job.code} before the PR was in review; the task is ready again.`);
   if (Date.now() - job.started < 120000) down(job.agent);
-  attempt('bd', ['unclaim', job.Task]);
-  failed(job.Task, 'the worker');
+  await attempt('bd', ['unclaim', job.Task]);
+  await failed(job.Task, 'the worker');
 }
 
 // The PR waits for the owner's review: keep the worker's session for it, compacted so a fix starts from a short context.
@@ -324,11 +327,11 @@ function compactDone(job) {
   log(job.code ? `${job.Task}: could not compact the session (exit ${job.code}); a fix resumes it as it is.` : `${job.Task}: session compacted.`);
 }
 // The owner reviewed or commented since the last run: the same session fixes it; a fresh worker if that agent cannot run.
-function startFix(pr, held) {
+async function startFix(pr, held) {
   // Read here, filtered to the owner: bin/guard/gh keeps the agent from reading comments on GitHub.
   const since = Date.parse(held.since);
   // --paginate prints one array per page; --jq '.[]' turns them into one comment per line (gh has no --slurp before 2.48).
-  const inline = run('gh', ['api', '--paginate', `repos/{owner}/{repo}/pulls/${pr.number}/comments?per_page=100`, '--jq', '.[]']).split('\n').filter(Boolean).map(line => JSON.parse(line));
+  const inline = (await run('gh', ['api', '--paginate', `repos/{owner}/{repo}/pulls/${pr.number}/comments?per_page=100`, '--jq', '.[]'])).split('\n').filter(Boolean).map(line => JSON.parse(line));
   const said = [...pr.reviews, ...pr.comments, ...inline]
     .map(item => ({ ...item, at: Date.parse(item.submittedAt ?? item.createdAt ?? item.created_at) }))
     .filter(item => mine(item) && item.at > since && item.body)
@@ -336,17 +339,18 @@ function startFix(pr, held) {
     .map(item => `- ${item.path ? `${item.path}:${item.line ?? item.original_line}: ` : ''}${item.body}`);
   const ask = `The owner reviewed PR #${pr.number} on GitHub after ${held.since}. What they wrote since then, oldest first:\n${said.join('\n')}\nDo what they ask, commit and push, then wait for CI until it passes, as before. Do not merge, and do not comment on or review the PR: the owner's next comment starts the next fix. ${catchUp()}`;
   const facts = [`Task: ${pr.task.id}`, `Title: ${pr.task.title}`, `Branch: ${pr.headRefName}`, `Base: ${base}`];
-  const same = held.id && scheduled().includes(held.agent) && usable(held);
-  const row = same ? held : pick('worker');
+  const same = held.id && scheduled().includes(held.agent) && await usable(held);
+  const row = same ? held : await pick('worker');
   if (!row) return log(`No worker agent available now to fix your review of PR #${pr.number}.`);
   const resume = same ? { id: held.id, message: ask } : { message: `${brief('worker', facts)}\n${ask}\n` };
   launch(row, 'worker', pr.task.id, join(trees, pr.task.id), facts, resume).fix = true;
 }
 
 // Open PRs whose branch is a Beads task still open here, oldest first.
-function taskPrs() {
-  return json('gh', ['pr', 'list', '--state', 'open', '--author', me, '--limit', '100', '--json', `number,headRefName,title,statusCheckRollup${human ? ',reviews,comments' : ''}`])
-    .map(pr => ({ ...pr, task: show(pr.headRefName) }))
+async function taskPrs() {
+  const prs = await json('gh', ['pr', 'list', '--state', 'open', '--author', me, '--limit', '100', '--json', `number,headRefName,title,statusCheckRollup${human ? ',reviews,comments' : ''}`]);
+  for (const pr of prs) pr.task = await show(pr.headRefName); // one at a time, as before: bd calls share one database
+  return prs
     .filter(pr => pr.task && pr.task.status !== 'closed')
     .sort((a, b) => a.number - b.number);
 }
@@ -355,20 +359,20 @@ const settled = pr => pr.statusCheckRollup?.length &&
 // Check runs report a conclusion, commit statuses a state.
 const passed = pr => pr.statusCheckRollup.every(check => ['SUCCESS', 'NEUTRAL', 'SKIPPED'].includes(check.conclusion ?? check.state));
 const reviewed = new Set(); // PRs a reviewer has started; their red CI is the reviewer's to fix, up to TRIES runs
-function startReview(pr, row) {
+async function startReview(pr, row) {
   reviewed.add(pr.number);
   // Each review starts from a clean, current base; the reviewer checks the PR out detached.
-  run('git', ['fetch', '-q', 'origin']);
-  run('git', ['checkout', '-q', '-f', '--detach', `origin/${base}`], { cwd: reviewTree });
-  run('git', ['clean', '-fdq'], { cwd: reviewTree });
+  await run('git', ['fetch', '-q', 'origin']);
+  await run('git', ['checkout', '-q', '-f', '--detach', `origin/${base}`], { cwd: reviewTree });
+  await run('git', ['clean', '-fdq'], { cwd: reviewTree });
   borrowModules(reviewTree);
   launch(row, 'reviewer', `review-${pr.number}`, reviewTree,
     [`PR: #${pr.number}`, `Task: ${pr.task.id}`, `Title: ${pr.task.title}`, `Branch: ${pr.headRefName}`, `Base: ${base}`]);
 }
 // The reviewer takes the PR that unblocks the most open tasks first, counting the tasks those block in turn.
-function blocking() {
+async function blocking() {
   const blocks = new Map(); // task -> the open tasks waiting on it directly
-  for (const issue of json('bd', ['list', '--status', 'open,in_progress,blocked', '--json', '--limit', '0']) ?? []) {
+  for (const issue of await json('bd', ['list', '--status', 'open,in_progress,blocked', '--json', '--limit', '0']) ?? []) {
     for (const dep of issue.dependencies ?? []) if (dep.type === 'blocks') blocks.set(dep.depends_on_id, [...(blocks.get(dep.depends_on_id) ?? []), issue.id]);
   }
   return id => {
@@ -379,62 +383,62 @@ function blocking() {
 }
 let merges = 0;
 let slow = null; // the dispatched slow-suite run being watched
-function reviewDone(job) {
+async function reviewDone(job) {
   const number = job.PR.slice(1);
-  const state = JSON.parse(attempt('gh', ['pr', 'view', number, '--json', 'state']) ?? '{}').state;
+  const state = JSON.parse(await attempt('gh', ['pr', 'view', number, '--json', 'state']) ?? '{}').state;
   if (state !== 'MERGED') {
-    if (labelled(show(job.Task) ?? {}, 'needs-human')) return log(`PR ${job.PR} needs a human; skipping it until the label is gone.`);
+    if (labelled(await show(job.Task) ?? {}, 'needs-human')) return log(`PR ${job.PR} needs a human; skipping it until the label is gone.`);
     log(`PR ${job.PR}: ${job.agent} exited with ${job.code} without merging.`);
     if (Date.now() - job.started < 120000) down(job.agent);
     return failed(job.Task, 'the review');
   }
-  merged(job.Task, number);
+  await merged(job.Task, number);
 }
-function merged(id, number) {
-  attempt('bd', ['close', id, '--reason', `Merged in PR #${number}`]);
+async function merged(id, number) {
+  await attempt('bd', ['close', id, '--reason', `Merged in PR #${number}`]);
   const path = join(trees, id);
-  if (existsSync(path)) attempt('git', ['worktree', 'remove', '--force', path]);
-  attempt('git', ['branch', '-D', id]);
-  attempt('git', ['push', '-q', 'origin', '--delete', id]); // GitHub keeps merged branches unless asked
+  if (existsSync(path)) await attempt('git', ['worktree', 'remove', '--force', path]);
+  await attempt('git', ['branch', '-D', id]);
+  await attempt('git', ['push', '-q', 'origin', '--delete', id]); // GitHub keeps merged branches unless asked
   if (tries.delete(id)) saveTries();
   if (delete sessions[id]) saveSessions();
   log(`Merged PR #${number} (${id}).`);
-  pull();
-  if (++merges % SLOW_EVERY === 0) dispatchSlow();
+  await pull();
+  if (++merges % SLOW_EVERY === 0) await dispatchSlow();
 }
 // A task in review whose PR left the open list: merged while no reviewer was watching (a crash or a failed
 // gh call), closed by hand, or never opened. A merged one is finished here; the rest wait for the owner.
-function strays(open) {
-  const waiting = json('bd', ['list', '--label', 'in-review', '--status', 'in_progress', '--json', '--limit', '0']) ?? [];
+async function strays(open) {
+  const waiting = await json('bd', ['list', '--label', 'in-review', '--status', 'in_progress', '--json', '--limit', '0']) ?? [];
   for (const task of waiting) {
     if (labelled(task, 'needs-human') || open.some(pr => pr.headRefName === task.id) || [...running].some(job => job.Task === task.id)) continue;
-    const prs = json('gh', ['pr', 'list', '--head', task.id, '--author', me, '--state', 'all', '--json', 'number,state']) ?? [];
+    const prs = await json('gh', ['pr', 'list', '--head', task.id, '--author', me, '--state', 'all', '--json', 'number,state']) ?? [];
     if (prs.some(pr => pr.state === 'OPEN')) continue; // opened after the open list was read
     const done = prs.find(pr => pr.state === 'MERGED');
-    if (done) { merged(task.id, done.number); continue; }
+    if (done) { await merged(task.id, done.number); continue; }
     const why = prs.length ? `its PR #${prs[0].number} is ${prs[0].state.toLowerCase()}` : 'it has no PR';
-    attempt('bd', ['update', task.id, '--add-label', 'needs-human']);
-    attempt('bd', ['note', task.id, `ralph-afk --pr: labelled in-review but ${why}.`]);
+    await attempt('bd', ['update', task.id, '--add-label', 'needs-human']);
+    await attempt('bd', ['note', task.id, `ralph-afk --pr: labelled in-review but ${why}.`]);
     log(`${task.id} is in review but ${why}; labelled needs-human.`);
   }
 }
 // The owner's checkout follows GitHub only while it has nothing of its own; the Beads export does not count.
-function pull() {
-  const branch = run('git', ['rev-parse', '--abbrev-ref', 'HEAD']);
-  const changes = run('git', ['status', '--porcelain', '--untracked-files=no']).split('\n')
+async function pull() {
+  const branch = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD']);
+  const changes = (await run('git', ['status', '--porcelain', '--untracked-files=no'])).split('\n')
     .filter(line => line && !line.endsWith(' .beads/issues.jsonl'));
   if (branch !== base || changes.length) return log(`Not pulling the main checkout: it is on ${branch} or has local changes.`);
-  if (attempt('git', ['pull', '-q', '--ff-only', 'origin', base]) === null) log(`Could not fast-forward the main checkout to origin/${base}.`);
+  if (await attempt('git', ['pull', '-q', '--ff-only', 'origin', base]) === null) log(`Could not fast-forward the main checkout to origin/${base}.`);
 }
-function dispatchSlow() {
+async function dispatchSlow() {
   const since = new Date(Date.now() - 60000).toISOString(); // a minute of clock skew
-  if (attempt('gh', ['workflow', 'run', 'slow-tests.yml', '--ref', base]) === null) return log('Could not start the slow-test workflow.');
+  if (await attempt('gh', ['workflow', 'run', 'slow-tests.yml', '--ref', base]) === null) return log('Could not start the slow-test workflow.');
   slow = { since, until: Date.now() + 3600000 };
   log(`${merges} merges: started the slow-test workflow.`);
 }
-function checkSlow() {
+async function checkSlow() {
   if (!slow) return;
-  const runs = json('gh', ['run', 'list', '--workflow', 'slow-tests.yml', '--event', 'workflow_dispatch', '--limit', '1', '--json', 'status,conclusion,url,createdAt']);
+  const runs = await json('gh', ['run', 'list', '--workflow', 'slow-tests.yml', '--event', 'workflow_dispatch', '--limit', '1', '--json', 'status,conclusion,url,createdAt']);
   const latest = runs.find(entry => entry.createdAt >= slow.since);
   if (!latest || latest.status !== 'completed') {
     if (Date.now() > slow.until) { log('The slow-test workflow did not finish within an hour; no longer waiting.'); slow = null; }
@@ -442,17 +446,17 @@ function checkSlow() {
   }
   slow = null;
   if (latest.conclusion === 'success') return log('The slow-test workflow passed.');
-  const id = createTask('Fix test:slow failures', `The slow-test workflow failed on ${base}: ${latest.url}. Reproduce from the run log, fix every failure and open a PR.`);
+  const id = await createTask('Fix test:slow failures', `The slow-test workflow failed on ${base}: ${latest.url}. Reproduce from the run log, fix every failure and open a PR.`);
   log(`The slow-test workflow failed (${latest.url}); filed ${id ?? 'nothing: bd create failed'}.`);
 }
 // Same as ralph-afk: bd cannot change a database's prefix, so honour config.yaml's issue-prefix with an explicit ID.
-function createTask(title, description) {
+async function createTask(title, description) {
   const config = existsSync('.beads/config.yaml') ? readFileSync('.beads/config.yaml', 'utf8') : '';
   const prefix = /^issue-prefix: *"?([^"\n]*)"? *$/m.exec(config)?.[1];
   let id = [];
   if (prefix) {
     let candidate;
-    do candidate = `${prefix}-${Math.random().toString(36).slice(2, 5)}`; while (show(candidate));
+    do candidate = `${prefix}-${Math.random().toString(36).slice(2, 5)}`; while (await show(candidate));
     id = ['--force', '--id', candidate];
   }
   return attempt('bd', ['create', ...id, '--type', 'task', '--title', title, '--description', description, '--silent']);
@@ -470,8 +474,8 @@ function interrupt() {
 process.on('SIGINT', interrupt);
 process.on('SIGTERM', () => { stopAll(); process.exit(143); });
 
-function listParked() {
-  const parked = json('bd', ['list', '--label', 'needs-human', '--status', 'open,in_progress,blocked', '--json', '--limit', '0']) ?? [];
+async function listParked() {
+  const parked = await json('bd', ['list', '--label', 'needs-human', '--status', 'open,in_progress,blocked', '--json', '--limit', '0']) ?? [];
   if (!parked.length) return;
   const say = screen ? log : console.log;
   say('Waiting for a human:');
@@ -508,33 +512,34 @@ let latest = { prs: [], waiting: 0 }; // the last check, for the dashboard
 if (process.stdin.isTTY && process.stdout.isTTY) screen = startTui(dashboard, interrupt);
 log(`PR mode on ${base}: ${humanWorker ? 'you write the code' : `up to ${slots} workers`}, ${human ? 'you review on GitHub' : 'one reviewer'}.`);
 // One pass over the queue; true once a requested stop has nothing left running.
-function poll() {
-  const closed = JSON.parse(attempt('bd', ['epic', 'close-eligible', '--json']) ?? '{}').closed ?? [];
+async function poll() {
+  const closed = JSON.parse(await attempt('bd', ['epic', 'close-eligible', '--json']) ?? '{}').closed ?? [];
   if (closed.length) log(`Closed finished epics: ${closed.join(' ')}`);
-  checkSlow();
+  await checkSlow();
   const workers = [...running].filter(job => job.stage === 'worker');
-  const ready = stopping ? [] : readyTasks().filter(task => !workers.some(job => job.Task === task.id));
+  const ready = stopping ? [] : (await readyTasks()).filter(task => !workers.some(job => job.Task === task.id));
   for (const task of humanWorker ? [] : ready.slice(0, slots - workers.length)) {
-    const row = pick('worker');
+    const row = await pick('worker');
+    if (stopping) break; // q pressed while the probe ran
     if (!row) { log('No worker agent available now.'); break; }
-    startWorker(task, row);
+    await startWorker(task, row);
   }
-  const open = taskPrs();
+  const open = await taskPrs();
   // worker|human: the owner's PR is in review once its CI passes; in-review keeps the rest of the flow as for a worker's.
   for (const pr of humanWorker ? open.filter(pr => !labelled(pr.task, 'in-review', 'needs-human') && settled(pr) && passed(pr)) : []) {
-    if (attempt('bd', ['update', pr.task.id, '--status', 'in_progress', '--add-label', 'in-review']) === null) continue;
+    if (await attempt('bd', ['update', pr.task.id, '--status', 'in_progress', '--add-label', 'in-review']) === null) continue;
     pr.task.labels = [...(pr.task.labels ?? []), 'in-review'];
     log(`PR #${pr.number} (${pr.task.id}): CI passed; in review.`);
   }
-  strays(open);
+  await strays(open);
   const prs = open.filter(pr => !labelled(pr.task, 'needs-human'));
   const reviewing = [...running].some(job => job.stage === 'reviewer');
   // A worker labels a PR in-review only on green CI; one that is red anyway waits for the owner.
   // The owner's own PR going red before a review is theirs to fix: it just waits.
   const busy = pr => [...running].some(job => job.Task === pr.task.id);
   for (const pr of humanWorker ? [] : prs.filter(pr => labelled(pr.task, 'in-review') && settled(pr) && !passed(pr) && !reviewed.has(pr.number) && !busy(pr))) {
-    attempt('bd', ['update', pr.task.id, '--add-label', 'needs-human']);
-    attempt('bd', ['note', pr.task.id, `ralph-afk --pr: PR #${pr.number} is in review but its CI failed.`]);
+    await attempt('bd', ['update', pr.task.id, '--add-label', 'needs-human']);
+    await attempt('bd', ['note', pr.task.id, `ralph-afk --pr: PR #${pr.number} is in review but its CI failed.`]);
     log(`PR #${pr.number} is in review but its CI failed; labelled needs-human. Remove in-review too to hand it back to a worker.`);
   }
   for (const pr of human && !stopping ? prs.filter(pr => labelled(pr.task, 'in-review') && !busy(pr)) : []) {
@@ -542,22 +547,22 @@ function poll() {
     if (!sessions[pr.task.id]) { sessions[pr.task.id] = { since: new Date().toISOString() }; saveSessions(); }
     const held = sessions[pr.task.id];
     const since = Date.parse(held.since);
-    if ([...pr.reviews, ...pr.comments].some(item => mine(item) && Date.parse(item.submittedAt ?? item.createdAt) > since)) startFix(pr, held);
+    if ([...pr.reviews, ...pr.comments].some(item => mine(item) && Date.parse(item.submittedAt ?? item.createdAt) > since) && !stopping) await startFix(pr, held);
   }
   const queue = human ? [] : prs.filter(pr => labelled(pr.task, 'in-review') && settled(pr) && (passed(pr) || reviewed.has(pr.number)));
   if (!stopping && !reviewing && queue.length) {
-    const blocks = blocking();
+    const blocks = await blocking();
     const next = queue.sort((a, b) => blocks(b.task.id) - blocks(a.task.id))[0]; // stable: the oldest PR on a tie
-    const row = pick('reviewer');
-    if (row) startReview(next, row);
-    else log('No reviewer agent available now; waiting.');
+    const row = await pick('reviewer');
+    if (!row) log('No reviewer agent available now; waiting.');
+    else if (!stopping) await startReview(next, row); // not when q was pressed while the probe ran
   }
   if (stopping && !running.size) return true;
   // Out of work: keep checking, so tasks filed later start without a restart.
   const nothing = !running.size && !(humanWorker ? 0 : ready.length) && !prs.length && !slow;
   if (nothing && !idle) {
     log(`Out of work. Checking for new tasks every ${pollMs / 1000}s; Ctrl+C to stop.`);
-    listParked();
+    await listParked();
   }
   idle = nothing;
   latest = { prs: open, waiting: ready.filter(task => ![...running].some(job => job.Task === task.id)).length };
@@ -569,17 +574,17 @@ function poll() {
 }
 for (;;) {
   // A failed gh, bd or git call (network, rate limit) must not end the run: its agents run detached and would be orphaned.
-  try { if (poll()) break; } catch (error) {
+  try { if (await poll()) break; } catch (error) {
     log(`Check failed: ${firstLine(error.stderr || error.message)}; trying again in ${pollMs / 1000}s.`);
-    if (stopping && !running.size) break;
   }
+  if (stopping && !running.size) break; // also when the stop came during the check
   // Once stopping, halt stays aborted and its sleep returns at once: wait for the agents only, or this spins on gh and bd.
   await Promise.race([...(stopping ? [] : [sleep(pollMs, null, { signal: halt.signal }).catch(() => {})]), ...[...running].map(job => job.done)]);
   for (const job of running) {
     if (job.code === undefined) continue;
     running.delete(job);
     progress(job);
-    (job.compact ? compactDone : job.stage === 'worker' ? workerDone : reviewDone)(job);
+    await (job.compact ? compactDone : job.stage === 'worker' ? workerDone : reviewDone)(job);
   }
 }
 
@@ -590,5 +595,5 @@ if (screen) {
 }
 log('Stop requested. Stopping.');
 // Commit the export once here so the next start pushes it with the planning commits.
-commitBeads('chore(beads): export after ralph-afk --pr');
-listParked();
+await commitBeads('chore(beads): export after ralph-afk --pr');
+await listParked();

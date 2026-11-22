@@ -1,6 +1,7 @@
 // Is an agent usable now, and if it is usage-limited, when is it worth probing again?
 // `node ralph-probe.mjs agent` exits 0 when usable; otherwise it exits 1 and prints the reset in epoch seconds, if known.
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
 const MARGIN = 60000; // probe a minute after the reset, so the limit has surely lifted
@@ -13,10 +14,12 @@ export const probes = {
 };
 
 // Returns { ok, until }: until is the reset in epoch ms, or undefined when the agent named none.
-export function probe(agent) {
+// Async, so the --pr dashboard still answers keys while a probe runs.
+export async function probe(agent) {
   const [command, ...args] = probes[agent];
-  const reply = spawnSync(command, args, { cwd: '/tmp', encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 180000 });
-  const ok = reply.status === 0 && (reply.stdout ?? '').toLowerCase().includes('pong');
+  // A failed run rejects with an error that holds its stdout and stderr too.
+  const reply = await promisify(execFile)(command, args, { cwd: '/tmp', encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 180000 }).catch(error => error);
+  const ok = !(reply instanceof Error) && reply.stdout.toLowerCase().includes('pong');
   return { ok, until: ok ? undefined : retryAt(`${reply.stdout}\n${reply.stderr}`) };
 }
 
@@ -37,7 +40,7 @@ export function retryAt(text, now = Date.now()) {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const { ok, until } = probe(process.argv[2]);
+  const { ok, until } = await probe(process.argv[2]);
   if (until) console.log(Math.ceil(until / 1000));
   process.exit(ok ? 0 : 1);
 }

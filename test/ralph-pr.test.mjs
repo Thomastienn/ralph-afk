@@ -53,6 +53,8 @@ const prs = read('prs.json', []);
 if (process.env.FIXTURE_GH_FLAKY && args[0] === 'pr' && args[1] === 'list' && !fs.existsSync(process.env.FIX + '/gh-flaked')) {
   fs.writeFileSync(process.env.FIX + '/gh-flaked', ''); console.error('HTTP 502: Bad Gateway'); process.exit(1);
 }
+// FIXTURE_GH_SLOW: the open-PR list hangs, as a slow network does.
+if (process.env.FIXTURE_GH_SLOW && args[0] === 'pr' && args[1] === 'list' && !args.includes('--head')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15000);
 switch (args.slice(0, 2).join(' ')) {
   case 'repo view': out({ defaultBranchRef: { name: 'master' } }); break;
   case 'pr create':
@@ -164,7 +166,8 @@ function fixture(issues) {
     child.on('close', status => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
   });
   const issue = id => JSON.parse(readFileSync(join(fix, 'issues.json'), 'utf8')).find(i => i.id === id);
-  return { base, cwd, fix, git, run, read, issue, claims: () => read('bd-calls').filter(call => call.endsWith('--claim')) };
+  const start = env => spawn('bash', [script, '--pr'], options(env));
+  return { base, cwd, fix, git, run, start, read, issue, claims: () => read('bd-calls').filter(call => call.endsWith('--claim')) };
 }
 
 test('workers open one PR per task, oldest epic first; one reviewer at a time merges them and cleans up', async () => {
@@ -330,6 +333,24 @@ test('after one Ctrl+C it waits for the running agents without polling gh and bd
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /E1\.1: PR in review\./);
   assert.ok(f.read('bd-calls').filter(call => call.startsWith('epic')).length <= 3, f.read('bd-calls').join('\n'));
+});
+
+test('Ctrl+C is handled while a gh call hangs: the second one stops at once', async () => {
+  const f = fixture([]);
+  const child = f.start({ FIXTURE_GH_SLOW: '1' });
+  let stdout = '';
+  const began = Date.now();
+  const status = await new Promise(resolve => {
+    const timer = setTimeout(() => child.kill('SIGKILL'), 30000);
+    child.stdout.on('data', data => {
+      stdout += data;
+      if (/PR mode on/.test(data)) setTimeout(() => child.kill('SIGINT'), 500); // inside the hanging pr list
+      if (/Stopping after the running agents finish/.test(data)) child.kill('SIGINT');
+    });
+    child.on('close', status => { clearTimeout(timer); resolve(status); });
+  });
+  assert.equal(status, 130, stdout);
+  assert.ok(Date.now() - began < 10000, `took ${Date.now() - began}ms`);
 });
 
 test('the reviewer takes the PR that unblocks the most tasks first, counting the tasks those block', async () => {
