@@ -354,7 +354,7 @@ async function startFix(pr, held) {
 
 // Open PRs whose branch is a Beads task still open here, oldest first.
 async function taskPrs() {
-  const prs = await json('gh', ['pr', 'list', '--state', 'open', '--author', me, '--limit', '100', '--json', `number,headRefName,title,statusCheckRollup${human ? ',reviews,comments' : ''}`]);
+  const prs = await json('gh', ['pr', 'list', '--state', 'open', '--author', me, '--limit', '100', '--json', `number,headRefName,title,statusCheckRollup${human ? ',reviews,comments,commits' : ''}`]);
   for (const pr of prs) pr.task = await show(pr.headRefName); // one at a time, as before: bd calls share one database
   return prs
     .filter(pr => pr.task && pr.task.status !== 'closed')
@@ -364,9 +364,14 @@ const settled = pr => pr.statusCheckRollup?.length &&
   pr.statusCheckRollup.every(check => (check.status ?? 'COMPLETED') === 'COMPLETED' && !['PENDING', 'EXPECTED'].includes(check.state));
 // Check runs report a conclusion, commit statuses a state.
 const passed = pr => pr.statusCheckRollup.every(check => ['SUCCESS', 'NEUTRAL', 'SKIPPED'].includes(check.conclusion ?? check.state));
-const reviewed = new Set(); // PRs a reviewer has started; their red CI is the reviewer's to fix, up to TRIES runs
+// PRs a reviewer has started; their red CI is the reviewer's to fix, up to TRIES runs. Kept on disk: a reviewer
+// stopped mid-fix leaves red CI that is still its own after a restart.
+const reviewedFile = join(logs, 'reviewed.json');
+const reviewed = new Set(existsSync(reviewedFile) ? JSON.parse(readFileSync(reviewedFile, 'utf8')) : []);
+const saveReviewed = () => writeFileSync(reviewedFile, JSON.stringify([...reviewed]));
 async function startReview(pr, row) {
   reviewed.add(pr.number);
+  saveReviewed();
   // Each review starts from a clean, current base; the reviewer checks the PR out detached.
   await run('git', ['fetch', '-q', 'origin']);
   await run('git', ['checkout', '-q', '-f', '--detach', `origin/${base}`], { cwd: reviewTree });
@@ -410,6 +415,7 @@ async function merged(id, number) {
   await attempt('bd', ['close', id, '--reason', `Merged in PR #${number}`]);
   if (tries.delete(id)) saveTries();
   if (delete sessions[id]) saveSessions();
+  if (reviewed.delete(Number(number))) saveReviewed();
   log(`Merged PR #${number} (${id}).`);
   await pull();
   if (++merges % SLOW_EVERY === 0) await dispatchSlow();
@@ -551,8 +557,9 @@ async function poll() {
     log(`PR #${pr.number} is in review but its CI failed; labelled needs-human. Remove in-review too to hand it back to a worker.`);
   }
   for (const pr of human && !stopping ? prs.filter(pr => labelled(pr.task, 'in-review') && !busy(pr)) : []) {
-    // In review before this run started: only what comes after now is new.
-    if (!sessions[pr.task.id]) { sessions[pr.task.id] = { since: new Date().toISOString() }; saveSessions(); }
+    // In review with no session kept (in review before reviewer|human, or a stop came before the worker's end was
+    // handled): what came after the PR's last commit is new, so a comment posted while this was down still counts.
+    if (!sessions[pr.task.id]) { sessions[pr.task.id] = { since: pr.commits.at(-1).committedDate }; saveSessions(); }
     const held = sessions[pr.task.id];
     const since = Date.parse(held.since);
     if ([...pr.reviews, ...pr.comments].some(item => mine(item) && Date.parse(item.submittedAt ?? item.createdAt) > since) && !stopping) await startFix(pr, held);

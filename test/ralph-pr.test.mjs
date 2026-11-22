@@ -60,7 +60,7 @@ if (process.env.FIXTURE_GH_SLOW && args[0] === 'pr' && args[1] === 'list' && !ar
 switch (args.slice(0, 2).join(' ')) {
   case 'repo view': out({ defaultBranchRef: { name: 'master' } }); break;
   case 'pr create':
-    prs.push({ number: prs.length + 1, headRefName: flag('--head'), title: flag('--title'), state: 'OPEN', author: { login: 'owner' }, reviews: [], comments: [], statusCheckRollup: [{ status: 'COMPLETED', conclusion: (process.env.FIXTURE_RED || '').split(' ').includes(flag('--head')) ? 'FAILURE' : 'SUCCESS' }] });
+    prs.push({ number: prs.length + 1, headRefName: flag('--head'), title: flag('--title'), state: 'OPEN', author: { login: 'owner' }, reviews: [], comments: [], commits: [{ committedDate: new Date().toISOString() }], statusCheckRollup: [{ status: 'COMPLETED', conclusion: (process.env.FIXTURE_RED || '').split(' ').includes(flag('--head')) ? 'FAILURE' : 'SUCCESS' }] });
     write('prs.json', prs); break;
   case 'pr list': out(prs.filter(pr => (flag('--state') === 'all' || pr.state === 'OPEN') && (!args.includes('--head') || pr.headRefName === flag('--head')) && (!args.includes('--author') || pr.author.login === flag('--author')))); break;
   case 'api user': console.log('owner'); break;
@@ -425,6 +425,40 @@ test('a reviewer whose fix turns CI red keeps the PR and runs again', async () =
   assert.ok(!f.issue('E1.1').labels.includes('needs-human'));
   assert.equal(f.issue('E1.1').status, 'closed');
   assert.equal(f.read('agents').filter(line => /^claude E1\.1 .*--model opus/.test(line)).length, 2);
+});
+
+test('a reviewer stopped by a second Ctrl+C after its fix turned CI red gets the PR again after a restart', async () => {
+  const f = fixture([epic('E1'), task('E1.1', 'E1')]);
+  const child = f.start({ FIXTURE_REVIEW_RED: '1' });
+  const red = () => existsSync(join(f.fix, 'prs.json')) && readFileSync(join(f.fix, 'prs.json'), 'utf8').includes('FAILURE');
+  const wait = setInterval(() => { if (red()) { clearInterval(wait); child.kill('SIGINT'); } }, 20); // before the reviewer exits
+  child.stdout.on('data', data => { if (/Stopping after the running agents finish/.test(data)) child.kill('SIGINT'); });
+  const status = await new Promise(resolve => child.on('close', resolve));
+  assert.equal(status, 130);
+  const result = await f.run({ FIXTURE_REVIEW_RED: '1' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(!f.issue('E1.1').labels.includes('needs-human'), result.stdout);
+  assert.equal(f.issue('E1.1').status, 'closed');
+  assert.deepEqual(JSON.parse(readFileSync(join(f.cwd, '.ralph-tui/pr-logs/reviewed.json'), 'utf8')), []);
+});
+
+test('reviewer|human: a PR in review with no kept session gets a fix for your comments since its last commit', async () => {
+  const f = fixture([epic('E1'), task('E1.1', 'E1', { status: 'in_progress', labels: ['in-review'] })]);
+  const table = join(f.base, 'agents');
+  writeFileSync(table, 'worker|claude|sonnet|high\nreviewer|human\n');
+  // As a run stopped right after the worker labelled it: its worktree and PR are there, no session was kept.
+  const tree = join(f.base, 'repo-pr', 'E1.1');
+  f.git('worktree', 'add', '-q', '-b', 'E1.1', tree);
+  const comment = (body, createdAt) => ({ author: { login: 'owner' }, body, createdAt });
+  writeFileSync(join(f.fix, 'prs.json'), JSON.stringify([{ number: 1, headRefName: 'E1.1', title: 'E1.1', state: 'OPEN', author: { login: 'owner' },
+    reviews: [], comments: [comment('Old ask.', '2026-01-01T00:00:00Z'), comment('Rename it.', '2026-01-03T00:00:00Z')],
+    commits: [{ committedDate: '2026-01-02T00:00:00Z' }], statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }] }]));
+  const result = await f.run({ RALPH_AGENTS: table }, [], out => /E1\.1: waiting for your review on GitHub\./.test(out));
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.read('fixes').length, 1, result.stdout);
+  const prompts = readFileSync(join(f.fix, 'prompts'), 'utf8');
+  assert.match(prompts, /oldest first:\n- Rename it\.\nDo what they ask/);
+  assert.doesNotMatch(prompts, /Old ask/);
 });
 
 test('reviewer|human: the worker session is compacted and waits; your review is fixed in that session; your merge closes the task', async () => {

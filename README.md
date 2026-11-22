@@ -282,7 +282,7 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
 - A PR labelled `in-review` whose CI failed before any review gets
   `needs-human`, not a reviewer. To hand it back to a worker, remove both
   labels. Once a reviewer has started a PR, red CI goes back to the reviewer,
-  up to 3 runs.
+  up to 3 runs, also after a restart (`.ralph-tui/pr-logs/reviewed.json`).
 - A task or PR whose agent fails 3 times gets `needs-human`. Other work
   continues. These items are listed when it runs out of work and at the end.
   Failure counts survive a restart (`.ralph-tui/pr-logs/tries.json`) and reset
@@ -356,8 +356,9 @@ With a `reviewer|human` line in the agents file, no reviewer agent runs:
 - A fix that exits with an error counts as a failed run, as for workers. A fix
   that leaves CI red gets `needs-human`.
 - Sessions are kept in `.ralph-tui/pr-logs/sessions.json`, so a restart still
-  resumes them. A PR already in review when the run starts waits for your next
-  comment and gets a fresh worker.
+  resumes them. A PR in review with no kept session (in review before you
+  switched to `reviewer|human`, or the run stopped before its worker's end was
+  handled) gets a fresh worker for the comments newer than its last commit.
 
 ## Environment variables
 
