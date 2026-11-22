@@ -58,6 +58,10 @@ with a note and the PR has a comment saying why.
   testing docs allow. Delete tests the diff adds or leaves behind that those
   docs forbid, that copy an existing test, or that no longer reach the code
   they claim to cover.
+  A passing test proves nothing by itself: read each test the diff adds or
+  changes and check it asserts the criterion's observable outcome, not a mock
+  of the code under test or its internals. Rewrite a test that would stay
+  green without the change.
 - **Mockup**: a `new-ui` task matches the design its `Mockup:` line links
   under `docs/mockups/`.
 - **Secrets**: the diff carries no credentials, tokens, keys or personal data.
