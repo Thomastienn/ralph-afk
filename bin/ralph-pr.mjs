@@ -327,7 +327,8 @@ function compactDone(job) {
 function startFix(pr, held) {
   // Read here, filtered to the owner: bin/guard/gh keeps the agent from reading comments on GitHub.
   const since = Date.parse(held.since);
-  const inline = json('gh', ['api', `repos/{owner}/{repo}/pulls/${pr.number}/comments`]) ?? [];
+  // --paginate prints one array per page; --jq '.[]' turns them into one comment per line (gh has no --slurp before 2.48).
+  const inline = run('gh', ['api', '--paginate', `repos/{owner}/{repo}/pulls/${pr.number}/comments?per_page=100`, '--jq', '.[]']).split('\n').filter(Boolean).map(line => JSON.parse(line));
   const said = [...pr.reviews, ...pr.comments, ...inline]
     .map(item => ({ ...item, at: Date.parse(item.submittedAt ?? item.createdAt ?? item.created_at) }))
     .filter(item => mine(item) && item.at > since && item.body)
