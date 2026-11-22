@@ -114,7 +114,8 @@ function launch(row, stage, name, cwd, facts, resume) {
   // detached: Ctrl+C in this terminal reaches only the supervisor, never a running agent.
   // The watcher ends the agent's group once this supervisor is gone, even after kill -9 or a closed terminal.
   const watch = `(while kill -0 ${process.pid} 2>/dev/null; do sleep 2; done; kill -TERM 0) & w=$!; "$@"; s=$?; kill $w 2>/dev/null; exit $s`;
-  const child = spawn('sh', ['-c', watch, 'sh', bin, ...args], { cwd, stdio: ['ignore', out, out], detached: true });
+  // bin/guard/gh first: agents cannot read GitHub text that other accounts wrote.
+  const child = spawn('sh', ['-c', watch, 'sh', bin, ...args], { cwd, stdio: ['ignore', out, out], detached: true, env: { ...process.env, PATH: `${join(here, 'guard')}:${process.env.PATH}` } });
   closeSync(out);
   let slot = 1; // a panel keeps its number while its agent runs
   while ([...running].some(job => job.slot === slot)) slot++;
@@ -210,6 +211,8 @@ function failed(id, what) {
 }
 
 const base = json('gh', ['repo', 'view', '--json', 'defaultBranchRef']).defaultBranchRef.name;
+const me = run('gh', ['api', 'user', '--jq', '.login']); // the owner: only this account's PRs and comments reach agents
+const mine = item => (item.author ?? item.user)?.login === me && item.state !== 'PENDING';
 const reviewTree = join(trees, 'reviewer');
 mkdirSync(logs, { recursive: true });
 mkdirSync(trees, { recursive: true });
@@ -320,7 +323,15 @@ function compactDone(job) {
 }
 // The owner reviewed or commented since the last run: the same session fixes it; a fresh worker if that agent cannot run.
 function startFix(pr, held) {
-  const ask = `The owner reviewed PR #${pr.number} on GitHub after ${held.since}. Read what they wrote since then: \`gh pr view ${pr.number} --comments\` and the inline comments from \`gh api repos/{owner}/{repo}/pulls/${pr.number}/comments\`. Do what they ask, commit and push, then wait for CI until it passes, as before. Do not merge, and do not comment on or review the PR: the owner's next comment starts the next fix. ${catchUp()}`;
+  // Read here, filtered to the owner: bin/guard/gh keeps the agent from reading comments on GitHub.
+  const since = Date.parse(held.since);
+  const inline = json('gh', ['api', `repos/{owner}/{repo}/pulls/${pr.number}/comments`]) ?? [];
+  const said = [...pr.reviews, ...pr.comments, ...inline]
+    .map(item => ({ ...item, at: Date.parse(item.submittedAt ?? item.createdAt ?? item.created_at) }))
+    .filter(item => mine(item) && item.at > since && item.body)
+    .sort((a, b) => a.at - b.at)
+    .map(item => `- ${item.path ? `${item.path}:${item.line ?? item.original_line}: ` : ''}${item.body}`);
+  const ask = `The owner reviewed PR #${pr.number} on GitHub after ${held.since}. What they wrote since then, oldest first:\n${said.join('\n')}\nDo what they ask, commit and push, then wait for CI until it passes, as before. Do not merge, and do not comment on or review the PR: the owner's next comment starts the next fix. ${catchUp()}`;
   const facts = [`Task: ${pr.task.id}`, `Title: ${pr.task.title}`, `Branch: ${pr.headRefName}`, `Base: ${base}`];
   const same = held.id && scheduled().includes(held.agent) && usable(held);
   const row = same ? held : pick('worker');
@@ -331,7 +342,7 @@ function startFix(pr, held) {
 
 // Open PRs whose branch is a Beads task still open here, oldest first.
 function taskPrs() {
-  return json('gh', ['pr', 'list', '--state', 'open', '--limit', '100', '--json', `number,headRefName,title,statusCheckRollup${human ? ',reviews,comments' : ''}`])
+  return json('gh', ['pr', 'list', '--state', 'open', '--author', me, '--limit', '100', '--json', `number,headRefName,title,statusCheckRollup${human ? ',reviews,comments' : ''}`])
     .map(pr => ({ ...pr, task: show(pr.headRefName) }))
     .filter(pr => pr.task && pr.task.status !== 'closed')
     .sort((a, b) => a.number - b.number);
@@ -394,7 +405,7 @@ function strays(open) {
   const waiting = json('bd', ['list', '--label', 'in-review', '--status', 'in_progress', '--json', '--limit', '0']) ?? [];
   for (const task of waiting) {
     if (labelled(task, 'needs-human') || open.some(pr => pr.headRefName === task.id) || [...running].some(job => job.Task === task.id)) continue;
-    const prs = json('gh', ['pr', 'list', '--head', task.id, '--state', 'all', '--json', 'number,state']) ?? [];
+    const prs = json('gh', ['pr', 'list', '--head', task.id, '--author', me, '--state', 'all', '--json', 'number,state']) ?? [];
     if (prs.some(pr => pr.state === 'OPEN')) continue; // opened after the open list was read
     const done = prs.find(pr => pr.state === 'MERGED');
     if (done) { merged(task.id, done.number); continue; }
@@ -528,7 +539,7 @@ function poll() {
     if (!sessions[pr.task.id]) { sessions[pr.task.id] = { since: new Date().toISOString() }; saveSessions(); }
     const held = sessions[pr.task.id];
     const since = Date.parse(held.since);
-    if ([...pr.reviews, ...pr.comments].some(item => item.state !== 'PENDING' && Date.parse(item.submittedAt ?? item.createdAt) > since)) startFix(pr, held);
+    if ([...pr.reviews, ...pr.comments].some(item => mine(item) && Date.parse(item.submittedAt ?? item.createdAt) > since)) startFix(pr, held);
   }
   const queue = human ? [] : prs.filter(pr => labelled(pr.task, 'in-review') && settled(pr) && (passed(pr) || reviewed.has(pr.number)));
   if (!stopping && !reviewing && queue.length) {

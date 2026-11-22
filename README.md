@@ -273,6 +273,12 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
 - Every worker and reviewer prompt ends with a catch-up rule: when the PR
   conflicts with the base, merge `origin/<base>` and push before waiting on CI.
   GitHub runs no CI on a conflicting PR, so without it the agent waits forever.
+- Only your own PRs and comments reach agents. `--pr` lists only PRs opened by
+  the `gh` login, so a stranger's PR from a branch named after a task is never
+  reviewed or merged. Agents run with `bin/guard/gh` first on `PATH`, which
+  refuses the `gh` calls that return text other accounts can write: issues,
+  search, comments, reviews and `gh pr list` without `--author`. A fixing
+  worker gets your comments in its prompt instead.
 - A PR labelled `in-review` whose CI failed before any review gets
   `needs-human`, not a reviewer. To hand it back to a worker, remove both
   labels. Once a reviewer has started a PR, red CI goes back to the reviewer,
@@ -342,6 +348,7 @@ With a `reviewer|human` line in the agents file, no reviewer agent runs:
    session with your comments. It fixes them, pushes, waits for CI and goes
    back to step 2.
 
+- Only your comments and reviews start a fix; other accounts' are ignored.
 - Only comments newer than the last run count: newer than the worker's end,
   or than a fix's start. A comment posted while a fix runs gets its own fix.
 - When the worker's agent cannot run now (limit, schedule) or its session

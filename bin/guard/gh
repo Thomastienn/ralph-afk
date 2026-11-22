@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# ralph-pr.mjs puts this first on every agent's PATH. Anyone can open a PR or issue, or comment, on a public repo, so
+# agents never read that text: this refuses the gh calls that return it, and the supervisor hands a fixing worker the
+# owner's own review comments. shortcut: a denylist of gh reads; curl with the gh token still reaches GitHub.
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -vxF "$here" | paste -sd: -)"
+deny() { echo "ralph-afk blocked \`gh $*\`: it returns text other GitHub accounts can write. Your prompt has what you need." >&2; exit 64; }
+
+fields='' prev='' author='' comments='' path=''
+for arg in "$@"; do
+  [[ $prev == --json ]] && fields=$arg
+  [[ $arg == --json=* ]] && fields=${arg#--json=}
+  [[ $arg == --author || $arg == --author=* || $arg == -A ]] && author=1
+  [[ $arg == --comments || $arg == -c ]] && comments=1
+  [[ $arg =~ graphql|(^|/)(comments|reviews|issues|events|timeline)(/|\?|$)|/pulls(\?|$) ]] && path=1
+  prev=$arg
+done
+[[ ,$fields, =~ ,(comments|reviews|latestReviews), ]] && deny "$@"
+case "$1" in
+  issue | search) deny "$@" ;;
+  api) [[ -z $path ]] || deny "$@" ;;
+  pr)
+    [[ $2 == list && -z $author ]] && deny "$@"
+    [[ ($2 == view || $2 == status) && -n $comments ]] && deny "$@"
+    ;;
+esac
+[[ "$(command -v gh)" != "$here/gh" ]] || { echo 'ralph-afk: no gh on PATH besides the guard.' >&2; exit 127; }
+exec gh "$@"
