@@ -46,6 +46,9 @@ const attempt = (command, args, options) => run(command, args, options).catch(()
 const json = async (command, args) => JSON.parse(await run(command, args) || 'null');
 const fail = message => { console.error(message); process.exit(1); };
 const labelled = (issue, ...names) => (issue.labels ?? []).some(label => names.includes(label));
+// Beads' git hooks take ~15s each, so the supervisor's own checkouts, pulls and branch deletes skip them: they only
+// import .beads/issues.jsonl, an export of this same database, and a delete pushes no commits for the secret scan.
+const noHooks = ['-c', 'core.hooksPath=/dev/null'];
 const show = async id => { const out = await attempt('bd', ['show', id, '--json']); return out && JSON.parse(out)[0]; };
 
 // Workers share the worker lines with ralph-afk.
@@ -237,7 +240,7 @@ if (dirty) fail(`Uncommitted changes; commit or stash them first:\n${dirty}`);
 try { await run('git', ['push', '-q', 'origin', base], { stdio: ['ignore', 'pipe', 'inherit'] }); }
 catch { fail(`Could not push local ${base} to origin; fix that first (diverged, or the pre-push secret scan refused).`); }
 await run('git', ['fetch', '-q', 'origin']);
-if (!existsSync(reviewTree)) await run('git', ['worktree', 'add', '-q', '--detach', reviewTree, `origin/${base}`]);
+if (!existsSync(reviewTree)) await run('git', [...noHooks, 'worktree', 'add', '-q', '--detach', reviewTree, `origin/${base}`]);
 // A previous run stopped mid-task: give its unfinished claims back.
 for (const id of readdirSync(trees).filter(name => name !== 'reviewer')) {
   const task = await show(id);
@@ -273,7 +276,7 @@ async function startWorker(task, row) {
       await run('git', ['fetch', '-q', 'origin']);
       await pushBase();
       const branch = await attempt('git', ['rev-parse', '-q', '--verify', `refs/heads/${task.id}`]);
-      await run('git', ['worktree', 'add', '-q', ...(branch ? [path, task.id] : ['-b', task.id, path, `origin/${base}`])]);
+      await run('git', [...noHooks, 'worktree', 'add', '-q', ...(branch ? [path, task.id] : ['-b', task.id, path, `origin/${base}`])]);
     }
     borrowModules(path);
   } catch (error) {
@@ -374,7 +377,7 @@ async function startReview(pr, row) {
   saveReviewed();
   // Each review starts from a clean, current base; the reviewer checks the PR out detached.
   await run('git', ['fetch', '-q', 'origin']);
-  await run('git', ['checkout', '-q', '-f', '--detach', `origin/${base}`], { cwd: reviewTree });
+  await run('git', [...noHooks, 'checkout', '-q', '-f', '--detach', `origin/${base}`], { cwd: reviewTree });
   await run('git', ['clean', '-fdq'], { cwd: reviewTree });
   borrowModules(reviewTree);
   if (stopping) return; // q came during the git calls: no new agent
@@ -411,7 +414,7 @@ async function merged(id, number) {
   const path = join(trees, id);
   if (existsSync(path)) await attempt('git', ['worktree', 'remove', '--force', path]);
   await attempt('git', ['branch', '-D', id]);
-  await attempt('git', ['push', '-q', 'origin', '--delete', id]); // GitHub keeps merged branches unless asked
+  await attempt('git', [...noHooks, 'push', '-q', 'origin', '--delete', id]); // GitHub keeps merged branches unless asked
   await attempt('bd', ['close', id, '--reason', `Merged in PR #${number}`]);
   if (tries.delete(id)) saveTries();
   if (delete sessions[id]) saveSessions();
@@ -442,7 +445,7 @@ async function pull() {
   const changes = (await run('git', ['status', '--porcelain', '--untracked-files=no'])).split('\n')
     .filter(line => line && !line.endsWith(' .beads/issues.jsonl'));
   if (branch !== base || changes.length) return log(`Not pulling the main checkout: it is on ${branch} or has local changes.`);
-  if (await attempt('git', ['pull', '-q', '--ff-only', 'origin', base]) === null) log(`Could not fast-forward the main checkout to origin/${base}.`);
+  if (await attempt('git', [...noHooks, 'pull', '-q', '--ff-only', 'origin', base]) === null) log(`Could not fast-forward the main checkout to origin/${base}.`);
 }
 async function dispatchSlow() {
   const since = new Date(Date.now() - 60000).toISOString(); // a minute of clock skew

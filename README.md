@@ -269,6 +269,10 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
 - After a merge, the task closes and its branch and worktree are removed. The
   main checkout fast-forwards if it is on the default branch with no local
   changes.
+- The supervisor's own worktree adds, reviewer checkouts, pulls and branch
+  deletes run without Git hooks. Beads' hooks take about 15 s each and only
+  re-import the export, so with them the next review started up to a minute
+  after a merge. Agents' own commits and pushes still run every hook.
 - Every 5 merges, `slow-tests.yml` is dispatched. A failure files a fix task.
 - Every worker and reviewer prompt ends with a catch-up rule: when the PR
   conflicts with the base, merge `origin/<base>` and push before waiting on CI.
