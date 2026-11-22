@@ -206,13 +206,15 @@ const saveSessions = () => writeFileSync(sessionsFile, JSON.stringify(sessions))
 // A task or PR that keeps failing waits for the owner instead of spinning.
 async function failed(id, what) {
   const n = (tries.get(id) ?? 0) + 1;
+  // Label before the count resets: a hard stop in between must not hand the task TRIES fresh runs.
+  if (n >= TRIES) {
+    await attempt('bd', ['update', id, '--add-label', 'needs-human']);
+    await attempt('bd', ['note', id, `ralph-afk --pr: ${what} failed ${n} times; see .ralph-tui/pr-logs/.`]);
+  }
   if (n < TRIES) tries.set(id, n);
   else tries.delete(id); // the owner removing needs-human gives it TRIES fresh runs
   saveTries();
-  if (n < TRIES) return;
-  await attempt('bd', ['update', id, '--add-label', 'needs-human']);
-  await attempt('bd', ['note', id, `ralph-afk --pr: ${what} failed ${n} times; see .ralph-tui/pr-logs/.`]);
-  log(`${id} failed ${n} times; labelled needs-human.`);
+  if (n >= TRIES) log(`${id} failed ${n} times; labelled needs-human.`);
 }
 
 const base = (await json('gh', ['repo', 'view', '--json', 'defaultBranchRef'])).defaultBranchRef.name;
@@ -263,8 +265,9 @@ function borrowModules(path) {
   if (existsSync(join(root, 'node_modules')) && !existsSync(join(path, 'node_modules'))) symlinkSync(join(root, 'node_modules'), join(path, 'node_modules'));
 }
 async function startWorker(task, row) {
-  if (await attempt('bd', ['update', task.id, '--claim']) === null) return;
   const path = join(trees, task.id);
+  // The worktree comes before the claim: a hard stop in between leaves the task open, and the next pass takes it.
+  // A claim without a worktree would stay claimed: the restart only gives back claims that have one.
   try {
     if (!existsSync(path)) {
       await run('git', ['fetch', '-q', 'origin']);
@@ -275,9 +278,9 @@ async function startWorker(task, row) {
     borrowModules(path);
   } catch (error) {
     log(`Could not make the worktree for ${task.id}: ${error.stderr || error.message}`);
-    await attempt('bd', ['unclaim', task.id]);
     return failed(task.id, 'making the worktree');
   }
+  if (await attempt('bd', ['update', task.id, '--claim']) === null) return;
   launch(row, 'worker', task.id, path, [`Task: ${task.id}`, `Title: ${task.title}`, `Branch: ${task.id}`, `Base: ${base}`]);
 }
 // A task added while this runs may come with planning commits; workers branch from origin, so push them first.
@@ -395,11 +398,12 @@ async function reviewDone(job) {
   await merged(job.Task, number);
 }
 async function merged(id, number) {
-  await attempt('bd', ['close', id, '--reason', `Merged in PR #${number}`]);
+  // Close last: a hard stop before it leaves the task in review with a merged PR, and strays() redoes all of this.
   const path = join(trees, id);
   if (existsSync(path)) await attempt('git', ['worktree', 'remove', '--force', path]);
   await attempt('git', ['branch', '-D', id]);
   await attempt('git', ['push', '-q', 'origin', '--delete', id]); // GitHub keeps merged branches unless asked
+  await attempt('bd', ['close', id, '--reason', `Merged in PR #${number}`]);
   if (tries.delete(id)) saveTries();
   if (delete sessions[id]) saveSessions();
   log(`Merged PR #${number} (${id}).`);

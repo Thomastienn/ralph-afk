@@ -17,6 +17,8 @@ const flag = name => { const i = rest.indexOf(name); return i < 0 ? undefined : 
 const get = id => issues.find(issue => issue.id === id);
 const out = value => console.log(JSON.stringify(value));
 fs.appendFileSync(process.env.FIX + '/bd-calls', [cmd, ...rest].join(' ') + '\\n');
+// FIXTURE_BD_SLOW_CLAIM: a claim takes 3s and FIX/claiming exists meanwhile, so a test can stop the supervisor inside it.
+if (process.env.FIXTURE_BD_SLOW_CLAIM && rest.includes('--claim')) { fs.writeFileSync(process.env.FIX + '/claiming', ''); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3000); }
 switch (cmd) {
   case 'ready': {
     const ready = issues.filter(i => i.status === 'open' && (!flag('--type') || i.issue_type === flag('--type')));
@@ -351,6 +353,18 @@ test('Ctrl+C is handled while a gh call hangs: the second one stops at once', as
   });
   assert.equal(status, 130, stdout);
   assert.ok(Date.now() - began < 10000, `took ${Date.now() - began}ms`);
+});
+
+test('a second Ctrl+C while a worker starts strands no task: the next run takes it', async () => {
+  const f = fixture([epic('E1'), task('E1.1', 'E1')]);
+  const child = f.start({ FIXTURE_BD_SLOW_CLAIM: '1' });
+  const wait = setInterval(() => { if (existsSync(join(f.fix, 'claiming'))) { clearInterval(wait); child.kill('SIGINT'); } }, 20);
+  child.stdout.on('data', data => { if (/Stopping after the running agents finish/.test(data)) child.kill('SIGINT'); });
+  const status = await new Promise(resolve => child.on('close', resolve));
+  assert.equal(status, 130);
+  const result = await f.run(); // its bd calls wait on the lock until the cut-off claim lands
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.issue('E1.1').status, 'closed');
 });
 
 test('the reviewer takes the PR that unblocks the most tasks first, counting the tasks those block', async () => {
