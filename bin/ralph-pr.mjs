@@ -280,6 +280,7 @@ async function startWorker(task, row) {
     log(`Could not make the worktree for ${task.id}: ${error.stderr || error.message}`);
     return failed(task.id, 'making the worktree');
   }
+  if (stopping) return; // q came during the git calls: no new agent, and the task stays open
   if (await attempt('bd', ['update', task.id, '--claim']) === null) return;
   launch(row, 'worker', task.id, path, [`Task: ${task.id}`, `Title: ${task.title}`, `Branch: ${task.id}`, `Base: ${base}`]);
 }
@@ -310,8 +311,9 @@ async function workerDone(job) {
   }
   log(`${job.Task}: ${job.agent} exited with ${job.code} before the PR was in review; the task is ready again.`);
   if (Date.now() - job.started < 120000) down(job.agent);
-  await attempt('bd', ['unclaim', job.Task]);
+  // Count first: a hard stop between the two leaves a claim with a worktree, which the restart gives back.
   await failed(job.Task, 'the worker');
+  await attempt('bd', ['unclaim', job.Task]);
 }
 
 // The PR waits for the owner's review: keep the worker's session for it, compacted so a fix starts from a short context.
@@ -323,7 +325,7 @@ function hold(job) {
   saveSessions();
   log(`${job.Task}: waiting for your review on GitHub.`);
   // shortcut: only Claude is compacted; codex exec resume <id> /compact is untested. Codex compacts itself near its limit.
-  if (job.agent !== 'claude') return;
+  if (job.agent !== 'claude' || stopping) return; // a stop starts no agent; a fix then resumes the session as it is
   launch(job, 'worker', job.Task, job.cwd, [`Task: ${job.Task}`, `Title: ${job.Title}`], { id, message: '/compact' }).compact = true;
 }
 function compactDone(job) {
@@ -345,6 +347,7 @@ async function startFix(pr, held) {
   const same = held.id && scheduled().includes(held.agent) && await usable(held);
   const row = same ? held : await pick('worker');
   if (!row) return log(`No worker agent available now to fix your review of PR #${pr.number}.`);
+  if (stopping) return; // q came during the calls above: the review stays new for the next run
   const resume = same ? { id: held.id, message: ask } : { message: `${brief('worker', facts)}\n${ask}\n` };
   launch(row, 'worker', pr.task.id, join(trees, pr.task.id), facts, resume).fix = true;
 }
@@ -369,6 +372,7 @@ async function startReview(pr, row) {
   await run('git', ['checkout', '-q', '-f', '--detach', `origin/${base}`], { cwd: reviewTree });
   await run('git', ['clean', '-fdq'], { cwd: reviewTree });
   borrowModules(reviewTree);
+  if (stopping) return; // q came during the git calls: no new agent
   launch(row, 'reviewer', `review-${pr.number}`, reviewTree,
     [`PR: #${pr.number}`, `Task: ${pr.task.id}`, `Title: ${pr.task.title}`, `Branch: ${pr.headRefName}`, `Base: ${base}`]);
 }

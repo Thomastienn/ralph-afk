@@ -367,6 +367,21 @@ test('a second Ctrl+C while a worker starts strands no task: the next run takes 
   assert.equal(f.issue('E1.1').status, 'closed');
 });
 
+test('one Ctrl+C while a worker starts starts no agent and leaves the task open', async () => {
+  const f = fixture([epic('E1'), task('E1.1', 'E1')]);
+  // The first fetch is the startup one; the worker's, the second, takes 2s.
+  const git = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  writeFileSync(join(f.fix, 'bin/git'), `#!/bin/sh\nif [ "$1" = fetch ] && [ -e "$FIX/fetched" ]; then touch "$FIX/fetching"; sleep 2; fi\n[ "$1" != fetch ] || touch "$FIX/fetched"\nexec ${git} "$@"\n`, { mode: 0o755 });
+  const child = f.start({});
+  const wait = setInterval(() => { if (existsSync(join(f.fix, 'fetching'))) { clearInterval(wait); child.kill('SIGINT'); } }, 20);
+  let stdout = '';
+  child.stdout.on('data', data => { stdout += data; });
+  const status = await new Promise(resolve => child.on('close', resolve));
+  assert.equal(status, 0, stdout);
+  assert.deepEqual(f.read('agents'), []);
+  assert.equal(f.issue('E1.1').status, 'open');
+});
+
 test('the reviewer takes the PR that unblocks the most tasks first, counting the tasks those block', async () => {
   const blocks = id => ({ status: 'blocked', dependencies: [{ depends_on_id: id, type: 'blocks' }] });
   const review = { status: 'in_progress', labels: ['in-review'] };
