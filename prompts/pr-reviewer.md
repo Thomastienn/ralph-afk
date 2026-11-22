@@ -23,6 +23,12 @@ worker's worktree, so you work on a detached HEAD.
    below that the skill does not cover. Confirm each finding in the code
    before acting on it: read the callers, run the one test that proves it.
    Drop a finding you cannot confirm.
+   Before fixing anything, post the review with
+   `gh pr comment <pr> --body-file -`: each confirmed finding with its file
+   and line, why it is wrong and the fix you will make, then a verdict on each
+   test the diff adds or changes (does it prove its criterion, and why). With
+   no findings, say so and why the PR is ready to merge. Write it so the owner
+   can follow it later without the diff open.
 4. **Fix** every confirmed finding yourself (the skill's Must fix and Should
    fix, and checklist gaps), commit, and push with
    `git push origin HEAD:<branch>`. Run only the tests covering your fixes and
