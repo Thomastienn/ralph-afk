@@ -64,6 +64,9 @@ const slots = Number(table.find(row => row.stage === 'workers')?.agent ?? 3); //
 const human = table.some(row => row.stage === 'reviewer' && row.agent === 'human');
 // worker|human: the owner writes the code on a branch named after the task; no worker agent runs.
 const humanWorker = table.some(row => row.stage === 'worker' && row.agent === 'human');
+// reviewer|none: no review at all; the supervisor squash-merges each in-review PR once its CI passed.
+const noReview = !human && table.some(row => row.stage === 'reviewer' && row.agent === 'none');
+if (noReview && humanWorker) fail(`${agentsFile} has worker|human and reviewer|none: use \`gh pr merge --auto\` on your own PRs instead.`);
 if (human && humanWorker) fail(`${agentsFile} has worker|human and reviewer|human: that leaves ralph-afk --pr nothing to do.`);
 
 // Same windows as ralph-afk: space-separated FROM-TO=agents in local hours.
@@ -358,7 +361,7 @@ async function startFix(pr, held) {
 
 // Open PRs whose branch is a Beads task still open here, oldest first.
 async function taskPrs() {
-  const prs = await json('gh', ['pr', 'list', '--state', 'open', '--author', me, '--limit', '100', '--json', `number,headRefName,title,statusCheckRollup${human ? ',reviews,comments,commits' : ''}`]);
+  const prs = await json('gh', ['pr', 'list', '--state', 'open', '--author', me, '--limit', '100', '--json', `number,headRefName,title,statusCheckRollup${human ? ',reviews,comments,commits' : ''}${noReview ? ',mergeable' : ''}`]);
   for (const pr of prs) pr.task = await show(pr.headRefName); // one at a time, as before: bd calls share one database
   return prs
     .filter(pr => pr.task && pr.task.status !== 'closed')
@@ -396,6 +399,21 @@ async function blocking() {
     for (const todo = [id]; todo.length;) for (const next of blocks.get(todo.pop()) ?? []) if (!seen.has(next)) { seen.add(next); todo.push(next); }
     return seen.size;
   };
+}
+// reviewer|none: one merge per check, since each merge can make the other PRs conflict.
+async function autoMerge(pr) {
+  if (pr.mergeable === 'UNKNOWN') return; // GitHub is still computing it: the next check asks again
+  if (pr.mergeable === 'CONFLICTING') {
+    // Back to the ready queue: the next worker resumes from the open PR, merges the base (catchUp) and labels it again.
+    if (await attempt('bd', ['update', pr.task.id, '--remove-label', 'in-review']) === null) return;
+    await attempt('bd', ['unclaim', pr.task.id]);
+    return log(`PR #${pr.number} (${pr.task.id}) conflicts with ${base}; a worker merges ${base} into it.`);
+  }
+  if (await attempt('gh', ['pr', 'merge', String(pr.number), '--squash', '--subject', `task: ${pr.task.id} ${pr.task.title}`]) === null) {
+    log(`Could not merge PR #${pr.number} (${pr.task.id}).`);
+    return failed(pr.task.id, 'merging');
+  }
+  await merged(pr.task.id, pr.number);
 }
 let merges = 0;
 let slow = null; // the dispatched slow-suite run being watched
@@ -505,7 +523,7 @@ async function listParked() {
 const minutes = start => `${Math.floor((Date.now() - start) / 60000)}m`;
 function status(prs, waiting) {
   const jobs = [...running];
-  log(`Status: ${humanWorker ? 'worker you' : `${jobs.filter(job => job.stage === 'worker').length} of ${slots} workers busy`}, reviewer ${jobs.some(job => job.stage === 'reviewer') ? 'busy' : 'free'}; ${waiting} ready tasks waiting; ${merges} merged this run.`);
+  log(`Status: ${humanWorker ? 'worker you' : `${jobs.filter(job => job.stage === 'worker').length} of ${slots} workers busy`}, reviewer ${noReview ? 'none' : jobs.some(job => job.stage === 'reviewer') ? 'busy' : 'free'}; ${waiting} ready tasks waiting; ${merges} merged this run.`);
   for (const job of jobs) console.log(`  ${job.stage} ${job.name} (${agentLabel(job)}, ${minutes(job.started)}): ${job.last ?? 'starting'}`.slice(0, 240));
   for (const pr of prs) console.log(`  ${prState(pr, jobs)}`);
 }
@@ -518,7 +536,7 @@ function prState(pr, jobs) {
 function dashboard() {
   const jobs = [...running].sort((a, b) => a.slot - b.slot);
   const workers = jobs.filter(job => job.stage === 'worker').length;
-  const reviewer = human ? 'you' : jobs.some(job => job.stage === 'reviewer') ? 'busy' : 'free';
+  const reviewer = human ? 'you' : noReview ? 'none' : jobs.some(job => job.stage === 'reviewer') ? 'busy' : 'free';
   return {
     header: [base, humanWorker ? 'worker you' : `${workers}/${slots} workers busy`, `reviewer ${reviewer}`, `${latest.waiting} ready`, `${merges} merged`,
       ...(idle ? ['out of work'] : []), ...(stopping ? ['stopping'] : [])],
@@ -531,7 +549,7 @@ let idle = false;
 let shown = 0; // when the last status block printed
 let latest = { prs: [], waiting: 0 }; // the last check, for the dashboard
 if (process.stdin.isTTY && process.stdout.isTTY) screen = startTui(dashboard, interrupt);
-log(`PR mode on ${base}: ${humanWorker ? 'you write the code' : `up to ${slots} workers`}, ${human ? 'you review on GitHub' : 'one reviewer'}.`);
+log(`PR mode on ${base}: ${humanWorker ? 'you write the code' : `up to ${slots} workers`}, ${human ? 'you review on GitHub' : noReview ? 'no reviewer, green PRs merge at once' : 'one reviewer'}.`);
 // One pass over the queue; true once a requested stop has nothing left running.
 async function poll() {
   const closed = JSON.parse(await attempt('bd', ['epic', 'close-eligible', '--json']) ?? '{}').closed ?? [];
@@ -575,9 +593,12 @@ async function poll() {
   if (!stopping && !reviewing && queue.length) {
     const blocks = await blocking();
     const next = queue.sort((a, b) => blocks(b.task.id) - blocks(a.task.id))[0]; // stable: the oldest PR on a tie
-    const row = await pick('reviewer');
-    if (!row) log('No reviewer agent available now; waiting.');
-    else if (!stopping) await startReview(next, row); // not when q was pressed while the probe ran
+    if (noReview) await autoMerge(next);
+    else {
+      const row = await pick('reviewer');
+      if (!row) log('No reviewer agent available now; waiting.');
+      else if (!stopping) await startReview(next, row); // not when q was pressed while the probe ran
+    }
   }
   if (stopping && !running.size) return true;
   // Out of work: keep checking, so tasks filed later start without a restart.

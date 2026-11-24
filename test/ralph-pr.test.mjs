@@ -31,6 +31,7 @@ switch (cmd) {
     if (rest.includes('--claim')) { if (issue.status !== 'open') process.exit(1); issue.status = 'in_progress'; }
     if (flag('--status')) issue.status = flag('--status');
     if (flag('--add-label')) issue.labels.push(flag('--add-label'));
+    if (flag('--remove-label')) issue.labels = issue.labels.filter(label => label !== flag('--remove-label'));
     save(); break;
   }
   case 'unclaim': get(rest[0]).status = 'open'; save(); break;
@@ -59,9 +60,13 @@ if (process.env.FIXTURE_GH_FLAKY && args[0] === 'pr' && args[1] === 'list' && !f
 if (process.env.FIXTURE_GH_SLOW && args[0] === 'pr' && args[1] === 'list' && !args.includes('--head')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15000);
 switch (args.slice(0, 2).join(' ')) {
   case 'repo view': out({ defaultBranchRef: { name: 'master' } }); break;
-  case 'pr create':
-    prs.push({ number: prs.length + 1, headRefName: flag('--head'), title: flag('--title'), state: 'OPEN', author: { login: 'owner' }, reviews: [], comments: [], commits: [{ committedDate: new Date().toISOString() }], statusCheckRollup: [{ status: 'COMPLETED', conclusion: (process.env.FIXTURE_RED || '').split(' ').includes(flag('--head')) ? 'FAILURE' : 'SUCCESS' }] });
+  case 'pr create': {
+    // FIXTURE_CONFLICT: these branches' first PR conflicts with the base; the next create, after the worker merged it, refreshes it.
+    const open = prs.find(pr => pr.headRefName === flag('--head') && pr.state === 'OPEN' && pr.author.login === 'owner');
+    if (open) { open.mergeable = 'MERGEABLE'; write('prs.json', prs); break; }
+    prs.push({ mergeable: (process.env.FIXTURE_CONFLICT || '').split(' ').includes(flag('--head')) ? 'CONFLICTING' : 'MERGEABLE',  number: prs.length + 1, headRefName: flag('--head'), title: flag('--title'), state: 'OPEN', author: { login: 'owner' }, reviews: [], comments: [], commits: [{ committedDate: new Date().toISOString() }], statusCheckRollup: [{ status: 'COMPLETED', conclusion: (process.env.FIXTURE_RED || '').split(' ').includes(flag('--head')) ? 'FAILURE' : 'SUCCESS' }] });
     write('prs.json', prs); break;
+  }
   case 'pr list': out(prs.filter(pr => (flag('--state') === 'all' || pr.state === 'OPEN') && (!args.includes('--head') || pr.headRefName === flag('--head')) && (!args.includes('--author') || pr.author.login === flag('--author')))); break;
   case 'api user': console.log('owner'); break;
   case 'api --paginate': for (const comment of read('inline.json', [])) console.log(JSON.stringify(comment)); break; // a PR's inline comments
@@ -545,6 +550,23 @@ test('worker|human: no worker runs; your PR is reviewed once its CI passes, a re
   assert.equal(f.issue('E1.1').status, 'closed');
   assert.deepEqual(f.issue('E1.2').labels, []);
   assert.equal(f.issue('E1.3').status, 'open');
+});
+
+test('reviewer|none: no reviewer runs; a green PR merges at once, a conflicting one goes back to a worker first', async () => {
+  const f = fixture([epic('E1'), task('E1.1', 'E1'), task('E1.2', 'E1')]);
+  const table = join(f.base, 'agents');
+  writeFileSync(table, 'worker|claude|sonnet|high\nreviewer|none\n');
+  rmSync(join(f.cwd, '.ralph-tui/pr-reviewer.md'));
+  const result = await f.run({ RALPH_AGENTS: table, FIXTURE_CONFLICT: 'E1.1' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /no reviewer, green PRs merge at once/);
+  assert.match(result.stdout, /PR #1 \(E1\.1\) conflicts with master; a worker merges master into it\./);
+  assert.deepEqual(f.claims(), ['update E1.1 --claim', 'update E1.2 --claim', 'update E1.1 --claim']);
+  const agents = f.read('agents');
+  assert.equal(agents.filter(line => / -p --permission-mode auto --model sonnet /.test(line)).length, 3, agents.join('\n'));
+  assert.equal(agents.length, 3, agents.join('\n'));
+  assert.deepEqual(f.read('merges'), ['2', '1']);
+  for (const id of ['E1.1', 'E1.2']) assert.equal(f.issue(id).status, 'closed', id);
 });
 
 test('worker|human with reviewer|human is refused', async () => {

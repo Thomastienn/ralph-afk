@@ -99,6 +99,11 @@ see [You as the reviewer](#you-as-the-reviewer). The other `reviewer` lines
 are then ignored, so commenting out `reviewer|human` brings the AI reviewer
 back.
 
+A `reviewer|none` line means no review at all; see
+[No reviewer](#no-reviewer). The other `reviewer` lines are then ignored.
+`reviewer|human` wins when both are there. `worker|human` with
+`reviewer|none` is refused: use `gh pr merge --auto` on your own PRs instead.
+
 A `worker|human` line means you write the code and `--pr` only reviews it;
 see [You as the worker](#you-as-the-worker). No worker agent runs and
 `workers|N` is ignored. Sequential `ralph-afk` ignores `worker|human` and
@@ -363,6 +368,26 @@ With a `reviewer|human` line in the agents file, no reviewer agent runs:
   resumes them. A PR in review with no kept session (in review before you
   switched to `reviewer|human`, or the run stopped before its worker's end was
   handled) gets a fresh worker for the comments newer than its last commit.
+
+### No reviewer
+
+With a `reviewer|none` line in the agents file, no reviewer agent runs and the
+reviewer prompt is not used:
+
+1. A worker works until CI passes and labels the task `in-review`, as usual.
+2. The supervisor squash-merges it with the subject `task: <task> <title>`.
+   It merges one PR per check, in the reviewer's order (the PR that unblocks
+   the most tasks first), since each merge can make the others conflict.
+3. A PR that conflicts with the base loses `in-review` and goes back to the
+   ready queue. The next worker resumes from the open PR, merges the base,
+   waits for CI and labels it `in-review` again.
+
+- A merge that fails for another reason (e.g. branch protection) counts as a
+  failed run; after 3 the task gets `needs-human`.
+- A green PR is merged even when it is behind the base. Two PRs that pass CI
+  alone can still break the base together; the slow suite every 5 merges is
+  the only check after the merge.
+- The dashboard header says `reviewer none`.
 
 ## Environment variables
 
