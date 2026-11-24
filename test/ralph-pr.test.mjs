@@ -40,7 +40,7 @@ switch (cmd) {
     issues.push({ id, title: flag('--title'), issue_type: flag('--type'), status: 'open', labels: [], description: flag('--description') });
     save(); console.log(id); break;
   }
-  case 'list': out(issues.filter(i => i.status !== 'closed' && (!flag('--label') || i.labels.includes(flag('--label'))))); break;
+  case 'list': out(issues.filter(i => i.status !== 'closed' && (!flag('--label') || i.labels.includes(flag('--label'))) && (!flag('--title') || i.title.includes(flag('--title'))))); break;
   case 'epic': out({ closed: [] }); break;
   default: out([]);
 }`;
@@ -586,6 +586,17 @@ test('every 5 merges the slow suite runs on GitHub; a failure files a fix task t
   assert.match(f.issue('T-new').description, /https:\/\/example\.invalid\/run\/1/);
   assert.equal(f.issue('T-new').status, 'closed');
   assert.equal(f.read('merges').length, 6);
+});
+
+test('while a slow-suite fix task is still open, 5 merges start no new slow run', async () => {
+  const pending = task('S1', undefined, { title: 'Fix test:slow failures', status: 'in_progress', labels: ['in-review', 'needs-human'] });
+  const f = fixture([pending, epic('E1'), ...[1, 2, 3, 4, 5].map(n => task(`E1.${n}`, 'E1'))]);
+  const result = await f.run({ FIXTURE_SLOW: 'failure' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.equal(f.read('merges').length, 5);
+  assert.deepEqual(f.read('dispatches'), []);
+  assert.equal(f.issue('T-new'), undefined);
+  assert.match(result.stdout, /S1 still fixes the last slow-test failure/);
 });
 
 test('--pr shares the sequential lock: a second supervisor in the checkout is refused', async () => {

@@ -19,6 +19,7 @@ const schedule = env.RALPH_AFK_SCHEDULE ?? '00-24=claude,codex';
 const waitMs = Number(env.RALPH_AFK_WAIT ?? 600) * 1000;
 const pollMs = Number(env.RALPH_PR_POLL ?? 120) * 1000;
 const SLOW_EVERY = 5; // merges between slow-suite runs on GitHub
+const SLOW_FIX = 'Fix test:slow failures'; // the task a failed slow run files
 const TRIES = 3; // failed agent runs on one task or PR before it needs a human
 const trees = join(dirname(root), `${basename(root)}-pr`); // outside the checkout, so nothing lands in .gitignore
 const logs = join(root, '.ralph-tui/pr-logs');
@@ -448,6 +449,9 @@ async function pull() {
   if (await attempt('git', [...noHooks, 'pull', '-q', '--ff-only', 'origin', base]) === null) log(`Could not fast-forward the main checkout to origin/${base}.`);
 }
 async function dispatchSlow() {
+  // A second run before the open fix merges fails the same way and files a duplicate task.
+  const pending = await json('bd', ['list', '--title', SLOW_FIX, '--json', '--limit', '0']);
+  if (pending?.length) return log(`${pending[0].id} still fixes the last slow-test failure; not starting the slow-test workflow.`);
   const since = new Date(Date.now() - 60000).toISOString(); // a minute of clock skew
   if (await attempt('gh', ['workflow', 'run', 'slow-tests.yml', '--ref', base]) === null) return log('Could not start the slow-test workflow.');
   slow = { since, until: Date.now() + 3600000 };
@@ -463,7 +467,7 @@ async function checkSlow() {
   }
   slow = null;
   if (latest.conclusion === 'success') return log('The slow-test workflow passed.');
-  const id = await createTask('Fix test:slow failures', `The slow-test workflow failed on ${base}: ${latest.url}. Reproduce from the run log, fix every failure and open a PR.`);
+  const id = await createTask(SLOW_FIX, `The slow-test workflow failed on ${base}: ${latest.url}. Reproduce from the run log, fix every failure and open a PR.`);
   log(`The slow-test workflow failed (${latest.url}); filed ${id ?? 'nothing: bd create failed'}.`);
 }
 // Same as ralph-afk: bd cannot change a database's prefix, so honour config.yaml's issue-prefix with an explicit ID.
