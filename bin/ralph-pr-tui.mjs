@@ -3,7 +3,7 @@
 // s opens the settings view, which edits the agents file one line at a time. It opens waiting: Enter starts the run.
 // p pauses: running agents finish, none start, and Enter resumes.
 import { readFileSync, writeFileSync } from 'node:fs';
-import { DEFAULTS, edit, parseAgents } from './ralph-agents.mjs';
+import { DEFAULTS, change, edit, parseAgents } from './ralph-agents.mjs';
 
 // Agent output may hold tabs or escape codes; they would break the layout.
 const clean = text => String(text).replace(/[\x00-\x1f\x7f]/g, ' ');
@@ -15,16 +15,20 @@ const bodyRows = rows => Math.max(1, rows - 4); // detail view: everything but i
 // SGR codes from the terminal's own 16 colours, so light and dark themes both keep their contrast.
 const STAGE = { worker: '36', reviewer: '35', merger: '34' }; // cyan, magenta, blue
 const STATE = { 'CI passed': '32', 'CI failed': '31', 'CI running': '33', 'no CI yet': '2', 'needs-human': '1;31' };
-// The settings view's tabs: Models has a row per agent line, the others a row per setting.
+// The settings view's tabs: Models has a row per agent line, on or off, the others a row per setting.
 const TABS = ['Models', 'Capacity', 'Timing'];
 const SETTINGS = {
   Capacity: [['workers', 'workers at once'], ['reviewers', 'reviewers at once'], ['tries', 'failed runs on one task or PR before needs-human'], ['slow-every', 'merges between slow-suite runs']],
   Timing: [['schedule', 'agents per hour, FROM-TO=agents'], ['wait', 'seconds before re-probing an agent with no reset time'], ['poll', 'seconds between checks']],
 };
-// The editable rows of a tab: cells hold the values, target(col) is what edit() changes. Throws on a bad file.
+// The editable rows of a tab: cells hold the values, target(col) is what edit() changes, line the agent line change()
+// takes. Throws on a bad file.
 export function settingsRows(text, tab) {
-  const { rows, settings } = parseAgents(text);
-  if (tab === 0) return rows.filter(row => row.model).map(row => ({ label: row.stage, cells: [row.agent, row.model, row.effort ?? '-'], target: col => ({ line: row.line, col }) }));
+  const { rows, off, settings } = parseAgents(text);
+  if (tab === 0) {
+    return [...rows.filter(row => row.model), ...off.map(row => ({ ...row, off: true }))].sort((a, b) => a.line - b.line)
+      .map(row => ({ label: row.stage, cells: [row.agent, row.model, row.effort ?? '-'], target: col => ({ line: row.line, col }), line: row.line, off: row.off, help: row.off && 'off' }));
+  }
   return SETTINGS[TABS[tab]].map(([key, help]) => ({ label: key, cells: [settings[key]], target: () => key, help: settings[key] === DEFAULTS[key] ? `default · ${help}` : help }));
 }
 const tone = text => /fail|could not|exited|needs a human|needs-human|not usable/i.test(text) ? '31' : /^Merged|passed/.test(text) ? '32' : '';
@@ -80,12 +84,14 @@ export function render({ header, stopping, paused, waiting, jobs, prs, logs, foc
     const widths = [0, 1, 2].map(i => Math.max(0, ...list.map(entry => clean(entry.cells[i] ?? '').length)));
     const cell = (entry, i, at) => {
       const text = entry.cells[i].padEnd(widths[i]);
-      if (at !== row || i !== col) return [` ${text} `, ''];
+      if (at !== row || i !== col) return [` ${text} `, entry.off ? '2' : ''];
       return buffer === null ? [` ${text} `, '7'] : [` ${buffer}▌`.padEnd(widths[i] + 2), '1;33'];
     };
-    const body = list.map((entry, at) => [[`  ${entry.label.padEnd(12)}`, at === row ? '1' : ''], ...entry.cells.map((_, i) => cell(entry, i, at)), ...(entry.help ? [[`  ${entry.help}`, '2']] : [])]);
+    const body = list.map((entry, at) => [[`  ${entry.label.padEnd(12)}`, at === row ? '1' : entry.off ? '2' : ''], ...entry.cells.map((_, i) => cell(entry, i, at)), ...(entry.help ? [[`  ${entry.help}`, '2']] : [])]);
     const tail = [rule, problem ? [[` ${problem}`, '31']] : note ? [[` ${note[0]}`, note[1]]] : [[' Changes apply to the next agent started; running agents keep theirs.', '2']],
-      keys(buffer === null ? [['Tab', 'next tab'], ['↑↓←→', 'move'], ['Enter', 'edit'], ['Esc', 'back']] : [['Enter', 'save'], ['Esc', 'cancel']])];
+      // The key line wraps: the Models keys do not fit 80 columns.
+      ...flow((buffer !== null ? [['Enter', 'save'], ['Esc', 'cancel']] : [['Tab', 'next tab'], ['↑↓←→', 'move'], ['Enter', 'edit'],
+        ...(tab === 0 ? [['a', 'add a copy'], ['d', 'delete'], ['Space', 'off/on']] : []), ['Esc', 'back']]).map(pair => keys([pair])), [], [], [])];
     const top = [bar(' ralph-pr settings', `${settings.file ?? ''} `, '7'), TABS.map((name, i) => [` ${name} `, i === tab ? '7;1' : '2']), [], ...body];
     lines = [...top.slice(0, Math.max(1, rows - tail.length)), ...Array(Math.max(0, rows - tail.length - top.length)).fill([]), ...tail];
   } else if (focus) {
@@ -168,25 +174,34 @@ export function startTui(state, interrupt, file, own, saved, pause, resume) {
       else if (key === '\x1b[D') s.col = Math.max(0, s.col - 1);
       else if (key === '\x1b[C') s.col = Math.min((entry?.cells.length ?? 1) - 1, s.col + 1);
       else if (key === '\r' && entry) { s.buffer = entry.cells[s.col]; s.note = null; }
+      // Models: a adds a copy of the line below it (a new line when there is none), d deletes it, Space turns it off or on.
+      else if (s.tab === 0 && (key === 'a' || (entry && (key === 'd' || key === ' ')))) {
+        if (save(text => change(text, entry?.line, { a: 'copy', d: 'delete', ' ': 'toggle' }[key])) && key === 'a' && entry) s.row++;
+        try { s.row = Math.max(0, Math.min(s.row, settingsRows(s.text, 0).length - 1)); } catch {} // a broken file shows its error instead
+      }
       return;
     }
     if (key === '\x1b') s.buffer = null;
     else if (key === '\x7f' || key === '\b') s.buffer = s.buffer.slice(0, -1);
     else if (key !== '\r') { if (key >= ' ' && key.length === 1) s.buffer += key; }
     else {
-      const now = readFileSync(file(), 'utf8');
-      // An edit by hand since the view opened moves lines: show the file as it is now instead of writing over it.
-      if (now !== s.text) { s.text = now; s.note = ['The agents file changed on disk; showing it as it is now. Try again.', '33']; }
-      else {
-        try {
-          s.text = edit(now, entry.target(s.col), s.buffer);
-          writeFileSync(own, s.text);
-          s.note = [`Saved to ${own}.`, '32'];
-          saved();
-        } catch (error) { s.note = [`Not saved: ${error.message}.`, '31']; }
-      }
+      save(text => edit(text, entry.target(s.col), s.buffer));
       s.buffer = null;
     }
+  };
+  // Writes next(the file) to own; true once saved.
+  const save = next => {
+    const s = settings;
+    const now = readFileSync(file(), 'utf8');
+    // An edit by hand since the view opened moves lines: show the file as it is now instead of writing over it.
+    if (now !== s.text) { s.text = now; s.note = ['The agents file changed on disk; showing it as it is now. Try again.', '33']; return false; }
+    try {
+      s.text = next(now);
+      writeFileSync(own, s.text);
+      s.note = [`Saved to ${own}.`, '32'];
+      saved();
+      return true;
+    } catch (error) { s.note = [`Not saved: ${error.message}.`, '31']; return false; }
   };
   // One chunk can hold several keys: presses made while the sync gh and bd calls block the loop arrive together.
   const keys = data => {

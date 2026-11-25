@@ -19,17 +19,26 @@ const CHECKS = {
     'space-separated FROM-TO=agents windows, FROM below TO and TO at most 24, agents claude or codex'],
 };
 const MODES = ['worker|human', 'reviewer|human', 'reviewer|none'];
+const OFF = /^\s*#\s*/; // an agent line commented out is off: the dashboard lists it so it can be turned back on
+const agentLine = ([stage, agent, model, effort, ...rest]) => ['worker', 'reviewer', 'merger'].includes(stage) && ['claude', 'codex'].includes(agent)
+  && !rest.length && model && effort ? { stage, agent, model, effort: effort !== '-' ? effort : null } : null;
 
-// rows: the agent and mode lines in file order, each with its line index; settings: the first line of each
-// setting, else its default. Throws `line N: ...` on the first line that is none of these.
+// rows: the agent and mode lines in file order, each with its line index; off: the agent lines commented out, the same
+// way; settings: the first line of each setting, else its default. Throws `line N: ...` on the first line that is none of these.
 export function parseAgents(text) {
   const rows = [];
+  const off = [];
   const settings = { ...DEFAULTS };
   const seen = new Set();
   text.split('\n').forEach((line, index) => {
-    if (!line.trim() || line.trimStart().startsWith('#')) return;
+    if (!line.trim()) return;
+    if (OFF.test(line)) {
+      const row = agentLine(line.replace(OFF, '').split('|'));
+      if (row) off.push({ ...row, line: index });
+      return;
+    }
     const fields = line.split('|');
-    const [stage, agent, model, effort] = fields;
+    const [stage, agent] = fields;
     const bad = why => { throw new Error(`line ${index + 1}: ${why}`); };
     if (stage in CHECKS) {
       const [check, hint] = CHECKS[stage];
@@ -37,11 +46,10 @@ export function parseAgents(text) {
       if (!seen.has(stage)) settings[stage] = agent;
       seen.add(stage);
     } else if (MODES.includes(line)) rows.push({ stage, agent, line: index });
-    else if (['worker', 'reviewer', 'merger'].includes(stage) && ['claude', 'codex'].includes(agent) && fields.length === 4 && model && effort) {
-      rows.push({ stage, agent, model, effort: effort !== '-' ? effort : null, line: index });
-    } else bad('expected stage|agent|model|effort (stage worker, reviewer or merger; agent claude or codex), worker|human, reviewer|human, reviewer|none or a setting such as workers|3');
+    else if (agentLine(fields)) rows.push({ ...agentLine(fields), line: index });
+    else bad('expected stage|agent|model|effort (stage worker, reviewer or merger; agent claude or codex), worker|human, reviewer|human, reviewer|none or a setting such as workers|3');
   });
-  return { rows, settings };
+  return { rows, off, settings };
 }
 
 // target: a setting's name, or { line, col } for column col (0 agent, 1 model, 2 effort) of an agent line.
@@ -56,7 +64,22 @@ export function edit(text, target, value) {
     const fields = lines[target.line].split('|');
     fields[target.col + 1] = value;
     lines[target.line] = fields.join('|');
+    // An off line is a comment, so check it as it would be once on.
+    if (OFF.test(lines[target.line])) parseAgents(lines.map((line, i) => i === target.line ? line.replace(OFF, '') : line).join('\n'));
   }
+  const next = lines.join('\n');
+  parseAgents(next);
+  return next;
+}
+
+// op on agent line `line`: 'copy' adds a copy below it, 'delete' removes it, 'toggle' turns it off (comments it out)
+// or back on. 'copy' with no line adds worker|claude|sonnet|- at the end. Returns the new text; throws when it would not parse.
+export function change(text, line, op) {
+  const lines = text.split('\n');
+  if (line === undefined) lines.splice(lines.at(-1) === '' ? -1 : lines.length, 0, 'worker|claude|sonnet|-');
+  else if (op === 'copy') lines.splice(line + 1, 0, lines[line]);
+  else if (op === 'delete') lines.splice(line, 1);
+  else lines[line] = OFF.test(lines[line]) ? lines[line].replace(OFF, '') : `#${lines[line]}`;
   const next = lines.join('\n');
   parseAgents(next);
   return next;

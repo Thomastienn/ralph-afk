@@ -140,19 +140,20 @@ test('keys that arrive in one chunk each count: q pressed twice while the loop w
 });
 
 test('the settings view shows the agent lines, then each setting with its default marked', () => {
-  const text = '# mine\nworker|claude|sonnet|high\nreviewer|codex|gpt|-\nworkers|4\n';
+  const text = '# mine\nworker|claude|sonnet|high\nreviewer|codex|gpt|-\n#merger|claude|opus|-\nworkers|4\n';
   const models = screen(view({ settings: { tab: 0, row: 1, col: 1, buffer: null, note: null, text, file: '.ralph-tui/agents' } }), 80, 12);
   assert.match(models[0], /^ ralph-pr settings +\.ralph-tui\/agents $/);
   assert.equal(models[1], ' Models  Capacity  Timing ');
-  assert.deepEqual(models.slice(3, 5), ['  worker       claude  sonnet  high ', '  reviewer     codex   gpt     -    ']);
+  assert.deepEqual(models.slice(3, 6), ['  worker       claude  sonnet  high ', '  reviewer     codex   gpt     -    ', '  merger       claude  opus    -      off']);
   assert.equal(models.length, 12);
-  assert.equal(models.at(-1), ' Tab  next tab   ↑↓←→  move   Enter  edit   Esc  back  ');
+  assert.deepEqual(models.slice(-2), [' Tab  next tab   ↑↓←→  move   Enter  edit   a  add a copy   d  delete  ', ' Space  off/on   Esc  back  ']);
+  assert.equal(screen(view({ settings: { tab: 2, row: 0, col: 0, buffer: null, note: null, text } }), 80, 12).at(-1), ' Tab  next tab   ↑↓←→  move   Enter  edit   Esc  back  ');
   const capacity = screen(view({ settings: { tab: 1, row: 0, col: 0, buffer: '7', note: null, text } }), 80, 12);
   assert.equal(capacity[3], '  workers      7▌  workers at once');
   assert.equal(capacity[4], '  reviewers    2   default · reviewers at once');
   assert.equal(capacity.at(-1), ' Enter  save   Esc  cancel  ');
   const broken = screen(view({ settings: { tab: 0, row: 0, col: 0, buffer: null, note: null, text: 'workers|none\n' } }), 80, 12);
-  assert.match(broken.at(-2), /^ Agents file line 1: workers must be a whole number from 1; fix it by hand\.$/);
+  assert.match(broken.at(-3), /^ Agents file line 1: workers must be a whole number from 1; fix it by hand\.$/);
 });
 
 test('s edits a copy of the shared agents file, then that copy in place: q types, a bad value is not saved, Esc goes back and q stops again', t => {
@@ -180,6 +181,33 @@ test('s edits a copy of the shared agents file, then that copy in place: q types
   press('q\x1bq');
   tui.stop();
   assert.equal(stops, 1);
+});
+
+test('the Models tab adds a copy of a line, turns a line off and on, and deletes one; an empty one gets a new line', t => {
+  const { stdin, stdout } = process;
+  for (const name of ['setRawMode', 'resume', 'pause']) { stdin[name] = () => stdin; t.after(() => delete stdin[name]); }
+  t.mock.method(stdout, 'write', () => true);
+  for (const [name, size] of [['rows', 24], ['columns', 80]]) { stdout[name] = size; t.after(() => delete stdout[name]); }
+  const own = join(mkdtempSync(join(tmpdir(), 'ralph-models-')), 'agents');
+  writeFileSync(own, '# mine\nworker|claude|sonnet|high\nworkers|2\n');
+  const tui = startTui(() => view(), () => {}, () => own, own, () => {});
+  const press = keys => stdin.emit('data', Buffer.from(keys));
+  const file = () => readFileSync(own, 'utf8');
+  press('sa\x1b[C\r\x7f\x7f\x7f\x7f\x7f\x7fopus\r'); // the copy is selected: its model becomes opus
+  assert.equal(file(), '# mine\nworker|claude|sonnet|high\nworker|claude|opus|high\nworkers|2\n');
+  press(' ');
+  assert.equal(file(), '# mine\nworker|claude|sonnet|high\n#worker|claude|opus|high\nworkers|2\n');
+  press('\x1b[A d');
+  assert.equal(file(), '# mine\n#worker|claude|opus|high\nworkers|2\n');
+  press(' ');
+  assert.equal(file(), '# mine\nworker|claude|opus|high\nworkers|2\n');
+  press('d');
+  assert.equal(file(), '# mine\nworkers|2\n');
+  press('da');
+  assert.equal(file(), '# mine\nworkers|2\nworker|claude|sonnet|-\n');
+  press('\td '); // the other tabs have none of these keys
+  assert.equal(file(), '# mine\nworkers|2\nworker|claude|sonnet|-\n');
+  tui.stop();
 });
 
 test('the dashboard opens waiting: the header and key line say so, s and q still work, Enter starts once', async t => {

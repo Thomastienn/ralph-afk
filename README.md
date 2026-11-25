@@ -313,8 +313,12 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
     (shown top right): when the shared file is in use, the first save copies
     it there, and the project uses its own file from then on. Other projects
     keep the shared settings. With `RALPH_AGENTS` set, that file is edited
-    in place. A bad value is not saved. Lines
-    are not added, removed or reordered here: do that in an editor. `q` does
+    in place. A bad value is not saved. On the Models tab, `a` adds a copy
+    of the selected line below it (a `worker|claude|sonnet|-` line when the
+    tab is empty), `d` deletes the line, and `Space` turns it off or back on.
+    An off line is commented out with `#`, so it stays in the file, listed
+    dim and marked `off`; agent lines you commented out by hand show the
+    same way. Lines are not reordered here: do that in an editor. `q` does
     not stop the run while the settings are open.
   - `p` pauses: running agents finish, no new agent starts and no PR
     merges, but the dashboard stays open. The header says `pausing`, then
