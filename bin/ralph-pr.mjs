@@ -681,7 +681,9 @@ async function poll() {
     status(open, latest.waiting);
   }
 }
-for (;;) {
+// The dashboard opens waiting, so settings can change before anything starts: Enter starts, q stops without a check.
+if (screen && !stopping) await Promise.race([screen.started, new Promise(resolve => halt.signal.addEventListener('abort', resolve))]);
+while (!stopping || running.size) {
   // A failed gh, bd or git call (network, rate limit) must not end the run: its agents run detached and would be orphaned.
   try { if (await poll()) break; } catch (error) {
     log(`Check failed: ${firstLine(error.stderr || error.message)}; trying again in ${pollMs / 1000}s.`);

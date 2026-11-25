@@ -181,3 +181,28 @@ test('s edits a copy of the shared agents file, then that copy in place: q types
   tui.stop();
   assert.equal(stops, 1);
 });
+
+test('the dashboard opens waiting: the header and key line say so, s and q still work, Enter starts once', async t => {
+  const waiting = screen(view({ waiting: true }), 100, 12);
+  assert.match(waiting[0], /^ ralph-pr {2}· {2}waiting: press Enter to start {2}· {2}master +\d\d:\d\d:\d\d $/);
+  assert.equal(waiting.at(-1), ' Enter  start   1-9  open agent   s  settings   q  stop  ');
+  assert.match(render(view({ waiting: true }), 100, 12)[0], /^\x1b\[7;33m/); // yellow until started
+  const { stdin, stdout } = process;
+  for (const name of ['setRawMode', 'resume', 'pause']) { stdin[name] = () => stdin; t.after(() => delete stdin[name]); }
+  // No await while stdout is mocked: the test runner's own output would go into it.
+  const writes = t.mock.method(stdout, 'write', () => true);
+  for (const [name, size] of [['rows', 24], ['columns', 100]]) { stdout[name] = size; t.after(() => delete stdout[name]); }
+  const last = () => writes.mock.calls.at(-1).arguments[0];
+  let stops = 0;
+  const tui = startTui(() => view(), () => stops++, () => 'agents.example', 'unused');
+  stdin.emit('data', Buffer.from('s\r\x1b\x1bq')); // Enter in the settings view edits; it does not start
+  const before = last();
+  stdin.emit('data', Buffer.from('\r'));
+  const after = last();
+  tui.stop();
+  writes.mock.restore();
+  assert.ok(before.includes('waiting: press Enter to start') && before.includes(' Enter '));
+  assert.ok(!after.includes('waiting') && !after.includes(' Enter '), 'the hint goes once started');
+  assert.equal(stops, 1);
+  await tui.started;
+});
