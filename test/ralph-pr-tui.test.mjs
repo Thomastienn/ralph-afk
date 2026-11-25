@@ -28,7 +28,7 @@ test('the overview shows each agent with its last 5 steps, then PRs, log and key
   assert.equal(text[10], ' │ starting');
   assert.equal(text[12], ' PRs  #42 T-2: CI passed, reviewer running');
   assert.deepEqual(text.slice(13, 15), [' Log  14:00:00 one', '      14:00:01 two']);
-  assert.equal(text.at(-1), ' 1-9  open agent   s  settings   q  stop  ');
+  assert.equal(text.at(-1), ' p  pause   1-9  open agent   s  settings   q  stop  ');
   assert.ok(text.every(line => line.length <= 80));
   assert.ok(lines[7].includes('\x1b[0m') && !lines[7].includes('\x1b[2m'), 'the newest step is not dimmed');
   assert.ok(lines[6].includes('\x1b[2mstep 7'), 'older steps are dimmed');
@@ -205,4 +205,20 @@ test('the dashboard opens waiting: the header and key line say so, s and q still
   assert.ok(!after.includes('waiting') && !after.includes(' Enter '), 'the hint goes once started');
   assert.equal(stops, 1);
   await tui.started;
+});
+
+test('p pauses and Enter resumes once started; a paused run shows Enter resume, a stopping one no p', t => {
+  assert.equal(screen(view({ stopping: true, paused: true }), 100, 12).at(-1), ' Enter  resume   1-9  open agent   s  settings   q  stop  ');
+  assert.equal(screen(view({ stopping: true }), 100, 12).at(-1), ' 1-9  open agent   s  settings   q  stop  ');
+  const { stdin, stdout } = process;
+  for (const name of ['setRawMode', 'resume', 'pause']) { stdin[name] = () => stdin; t.after(() => delete stdin[name]); }
+  const writes = t.mock.method(stdout, 'write', () => true);
+  for (const [name, size] of [['rows', 24], ['columns', 100]]) { stdout[name] = size; t.after(() => delete stdout[name]); }
+  const calls = [];
+  const tui = startTui(() => view(), () => calls.push('stop'), () => 'agents.example', 'unused', () => {}, () => calls.push('pause'), () => calls.push('resume'));
+  stdin.emit('data', Buffer.from('p')); // waiting to start: p does nothing
+  stdin.emit('data', Buffer.from('\rp\r'));
+  tui.stop();
+  writes.mock.restore();
+  assert.deepEqual(calls, ['pause', 'resume']);
 });

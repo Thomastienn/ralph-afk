@@ -301,7 +301,7 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
   - Colour marks state: workers cyan, reviewers magenta, the merger blue,
     errors and failures red, passed CI and merges green, running CI yellow. Older steps
     are dim, so the newest stands out. The header turns yellow while
-    waiting or stopping. `NO_COLOR` turns colour off.
+    waiting, pausing or stopping. `NO_COLOR` turns colour off.
   - `1`-`9` opens that agent full screen with all its steps; `↑`/`↓`
     scroll, `Esc` goes back.
   - `s` opens the settings: tabs Models (the agent lines' agent, model and
@@ -316,6 +316,10 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
     in place. A bad value is not saved. Lines
     are not added, removed or reordered here: do that in an editor. `q` does
     not stop the run while the settings are open.
+  - `p` pauses: running agents finish, no new agent starts and no PR
+    merges, but the dashboard stays open. The header says `pausing`, then
+    `paused: press Enter to resume`. `Enter` resumes, also while agents are
+    still finishing; `q` stops.
   - `q` or Ctrl+C stops, the same as Ctrl+C below.
   - The supervisor log also goes to `.ralph-tui/pr-logs/ralph-pr.log`, since
     the dashboard closes when the run ends.

@@ -1,6 +1,7 @@
 // Live dashboard for ralph-afk --pr: one panel per running agent, or one agent full screen.
 // ralph-pr.mjs starts it only when stdin and stdout are a terminal and supplies the data.
 // s opens the settings view, which edits the agents file one line at a time. It opens waiting: Enter starts the run.
+// p pauses: running agents finish, none start, and Enter resumes.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { DEFAULTS, edit, parseAgents } from './ralph-agents.mjs';
 
@@ -28,12 +29,12 @@ export function settingsRows(text, tab) {
 }
 const tone = text => /fail|could not|exited|needs a human|needs-human|not usable/i.test(text) ? '31' : /^Merged|passed/.test(text) ? '32' : '';
 
-// view: { header, stopping, waiting, jobs, prs, logs, focus, scroll, settings, now, color }; header is a list of fields;
+// view: { header, stopping, paused, waiting, jobs, prs, logs, focus, scroll, settings, now, color }; header is a list of fields;
 // jobs carry slot, stage, Task, Title, PR, agent, model, effort, context, started, steps, file.
 // settings: { tab, row, col, buffer, note, text, file } while the settings view is open; buffer is the value being typed,
 // file the one a save writes.
 // Returns the screen as at most rows lines, each at most cols characters wide.
-export function render({ header, stopping, waiting, jobs, prs, logs, focus, scroll = 0, settings, now, color = true }, cols, rows) {
+export function render({ header, stopping, paused, waiting, jobs, prs, logs, focus, scroll = 0, settings, now, color = true }, cols, rows) {
   // A line is a list of [text, SGR style] parts, cut to the terminal width before it is styled.
   const cut = (parts, room) => parts.map(([text, style]) => {
     const piece = clean(text).slice(0, Math.max(0, room));
@@ -127,15 +128,16 @@ export function render({ header, stopping, waiting, jobs, prs, logs, focus, scro
       return (text.match(new RegExp(`\\S.{0,${w - 1}}(?= |$)|\\S.{0,${w - 1}}`, 'g')) ?? ['']).map((piece, i) => [[i ? ' '.repeat(time.length) : time, '2'], [piece, tone(text)]]);
     }).slice(-n);
     lines = [...top, rule, ...prLines, ...wrapped.map((parts, i) => [[i ? '      ' : ' Log  ', '1'], ...parts]),
-      keys([...(waiting ? [['Enter', 'start']] : []), ['1-9', 'open agent'], ['s', 'settings'], ['q', 'stop']])];
+      keys([...(waiting ? [['Enter', 'start']] : paused ? [['Enter', 'resume']] : stopping ? [] : [['p', 'pause']]), ['1-9', 'open agent'], ['s', 'settings'], ['q', 'stop']])];
   }
   return lines.slice(0, rows).map(paint);
 }
 
-// state() returns { header, stopping, jobs, prs, logs }; interrupt runs on q or Ctrl+C (raw mode turns off SIGINT).
+// state() returns { header, stopping, paused, jobs, prs, logs }; interrupt runs on q or Ctrl+C (raw mode turns off SIGINT).
+// pause runs on p, resume on Enter once started.
 // file() is the agents file in use; the settings view saves to own, a copy of it when they differ. saved runs after each save.
 // The returned started resolves on Enter: until then the run waits, so settings can change before any agent starts.
-export function startTui(state, interrupt, file, own, saved) {
+export function startTui(state, interrupt, file, own, saved, pause, resume) {
   const { stdin, stdout } = process;
   let focus = null;
   let scroll = 0;
@@ -194,6 +196,8 @@ export function startTui(state, interrupt, file, own, saved) {
       else if (settings) setting(key);
       else if (key === 'q') interrupt();
       else if (key === '\r' && waiting) { waiting = false; begin(); }
+      else if (key === '\r') resume?.();
+      else if (key === 'p' && !waiting) pause?.();
       else if (key === 's') settings = { tab: 0, row: 0, col: 0, buffer: null, note: null, text: readFileSync(file(), 'utf8'), file: own };
       else if (job) { focus = job; scroll = 0; }
       else if (key === '\x1b') { focus = null; scroll = 0; }

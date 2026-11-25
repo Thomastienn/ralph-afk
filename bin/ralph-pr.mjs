@@ -583,13 +583,30 @@ async function createTask(title, description) {
 }
 
 let stopping = false;
+let paused = false; // p: a stop that waits for Enter instead of exiting; stopping is set too, so nothing new starts
+let resumed = () => {}; // ends the paused wait, on Enter or q
 const halt = new AbortController(); // Ctrl+C ends an idle wait at once
 const stopAll = () => { for (const job of running) try { process.kill(-job.child.pid, 'SIGTERM'); } catch {} };
 function interrupt() {
-  if (stopping) { stopAll(); process.exit(130); }
+  if (stopping && !paused) { stopAll(); process.exit(130); }
+  paused = false;
   stopping = true;
   halt.abort();
+  resumed();
   log('Stopping after the running agents finish. Press Ctrl+C again to stop now.');
+}
+function pause() {
+  if (stopping) return;
+  stopping = paused = true;
+  wake();
+  log('Pausing after the running agents finish; Enter resumes.');
+}
+function resume() {
+  if (!paused) return;
+  stopping = paused = false;
+  resumed();
+  wake();
+  log('Resumed.');
 }
 process.on('SIGINT', interrupt);
 process.on('SIGTERM', () => { stopAll(); process.exit(143); });
@@ -626,8 +643,8 @@ function dashboard() {
   const workers = jobs.filter(job => job.stage === 'worker').length;
   return {
     header: [base, humanWorker ? 'worker you' : `${workers}/${slots} workers busy`, ...reviewFields(jobs, (n, of) => `${n}/${of}`), `${latest.waiting} ready`, `${merges} merged`,
-      ...(idle ? ['out of work'] : []), ...(stopping ? ['stopping'] : [])],
-    stopping,
+      ...(idle ? ['out of work'] : []), ...(paused ? [running.size ? 'pausing' : 'paused: press Enter to resume'] : stopping ? ['stopping'] : [])],
+    stopping, paused,
     jobs, prs: latest.prs.map(pr => prState(pr, jobs)), logs: events,
   };
 }
@@ -639,7 +656,7 @@ let wake = () => {}; // a save in the settings view ends the wait, so a new work
 // The settings view saves to the project's own file, so a change made here never reaches other projects: the first
 // save copies the shared file there. RALPH_AGENTS names the file to use, so that one is edited in place.
 const own = env.RALPH_AGENTS ? agentsFile : '.ralph-tui/agents';
-if (process.stdin.isTTY && process.stdout.isTTY) screen = startTui(dashboard, interrupt, () => agentsFile, own, () => { agentsFile = own; reload(); wake(); });
+if (process.stdin.isTTY && process.stdout.isTTY) screen = startTui(dashboard, interrupt, () => agentsFile, own, () => { agentsFile = own; reload(); wake(); }, pause, resume);
 log(`PR mode on ${base}: ${humanWorker ? 'you write the code' : `up to ${slots} workers`}, ${human ? 'you review on GitHub' : noReview ? 'no reviewer, green PRs merge at once' : `up to ${reviewerSlots} reviewers`}.`);
 // One pass over the queue; true once a requested stop has nothing left running.
 async function poll() {
@@ -681,10 +698,10 @@ async function poll() {
     if ([...pr.reviews, ...pr.comments].some(item => mine(item) && Date.parse(item.submittedAt ?? item.createdAt) > since) && !stopping) await startFix(pr, held);
   }
   if (!human && !stopping) await advance(prs.filter(pr => labelled(pr.task, 'in-review') && !busy(pr)));
-  if (stopping && !running.size) return true;
+  if (stopping && !paused && !running.size) return true;
   // Out of work: keep checking, so tasks filed later start without a restart.
   const nothing = !running.size && !(humanWorker ? 0 : ready.length) && !prs.length && !slow;
-  if (nothing && !idle) {
+  if (nothing && !idle && !paused) {
     log(`Out of work. Checking for new tasks every ${pollMs / 1000}s; Ctrl+C to stop.`);
     await listParked();
   }
@@ -703,10 +720,16 @@ while (!stopping || running.size) {
   try { if (await poll()) break; } catch (error) {
     log(`Check failed: ${firstLine(error.stderr || error.message)}; trying again in ${pollMs / 1000}s.`);
   }
-  if (stopping && !running.size) break; // also when the stop came during the check
+  if (stopping && !running.size) { // also when the stop came during the check
+    if (!paused) break;
+    log('Paused: no agent running. Enter resumes, q stops.');
+    await new Promise(resolve => { resumed = resolve; });
+    continue;
+  }
   // Once stopping, halt stays aborted and its sleep returns at once: wait for the agents only, or this spins on gh and bd.
   // An agent whose end failed to be handled waits a poll too, also when stopping. Kept ref'd: with nothing else pending, an unref'd timer lets Node exit mid-await.
-  await Promise.race([...(stopping ? [] : [sleep(pollMs, null, { signal: halt.signal }).catch(() => {}), new Promise(resolve => { wake = resolve; })]),
+  // wake stays in when stopping: Enter while pausing resumes at once, not when the next agent ends.
+  await Promise.race([...(stopping ? [] : [sleep(pollMs, null, { signal: halt.signal }).catch(() => {})]), new Promise(resolve => { wake = resolve; }),
     ...[...running].map(job => job.retry ? sleep(pollMs) : job.done)]);
   for (const job of [...running]) {
     if (job.code === undefined) continue;
