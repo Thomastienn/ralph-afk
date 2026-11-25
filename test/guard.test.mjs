@@ -20,6 +20,12 @@ test('gh calls that return text other accounts can write are refused', () => {
     ['pr', 'list'], ['pr', 'list', '--head', 'T-1'],
     ['api', 'repos/{owner}/{repo}/pulls/3/comments'], ['api', 'repos/{owner}/{repo}/issues/3/comments?per_page=100'], ['api', '/repos/o/r/pulls/3/reviews'],
     ['api', 'repos/o/r/issues'], ['api', 'repos/o/r/pulls'], ['api', 'repos/o/r/issues/3/timeline'], ['api', 'graphql', '-f', 'query=x'],
+    ['status'], ['run', 'list'], ['run', 'ls'], ['run', '-R', 'o/r', 'list', '--workflow', 'ci.yml'],
+    ['api', 'notifications'], ['api', '/notifications?all=true'], ['api', '-X', 'GET', 'notifications/threads/1'],
+    ['api', 'repos/o/r/actions/runs'], ['api', '/repos/o/r/actions/runs?branch=T-1'], ['api', '--method', 'GET', 'repos/o/r/actions/runs/9/jobs'],
+    ['api', 'repos/o/r/actions/workflows/ci.yml/runs'],
+    ['pr', 'list', '--author', 'stranger'], ['pr', 'list', '--author=stranger'], ['pr', 'list', '-A', 'stranger'], ['pr', 'ls'],
+    ['pr', '-R', 'o/r', 'list'], ['pr', '--repo', 'o/r', 'list', '--head', 'T-1'], ['pr', 'list', '--author', '@me', '-Astranger'],
   ]) {
     const result = gh(...args);
     assert.equal(result.status, 64, args.join(' '));
@@ -34,6 +40,8 @@ test('the gh calls agents need reach the real gh', () => {
     ['pr', 'create', '--head', 'T-1', '--title', 'x'], ['pr', 'checks', 'T-1', '--watch'], ['pr', 'diff', '3'],
     ['pr', 'comment', '3', '--body', 'these comments are fixed'], ['pr', 'merge', '3', '--squash'],
     ['run', 'view', '9', '--log-failed'], ['workflow', 'run', 'slow.yml', '--ref', 'T-1'], ['api', 'repos/o/r/pulls/3'],
+    ['pr', 'list', '--author', '@me'], ['pr', 'list', '--author=@me'], ['pr', 'ls', '-A', '@me'], ['pr', '-R', 'o/r', 'list', '--author', '@me'],
+    ['pr', 'list', '--state', 'all', '--head', 'T-1', '--author', '@me', '--json', 'number,state'], ['pr', 'status'],
   ]) {
     const result = gh(...args);
     assert.equal(result.status, 0, `${args.join(' ')}: ${result.stderr}`);
