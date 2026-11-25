@@ -319,7 +319,7 @@ describe('pr', { concurrency: 4 }, () => {
 
     const counted = await fixture([epic('E1'), task('E1.1', 'E1')]).run({}, ['2']);
     assert.equal(counted.status, 2);
-    assert.match(counted.stderr, /^Usage: ralph-afk \[epic\.\.\.\] \| ralph-afk --pr \| ralph-afk --init$/m);
+    assert.match(counted.stderr, /^Usage: ralph-afk \[epic\.\.\.\] \| ralph-afk --pr \[--go\] \| ralph-afk --init$/m);
   });
 
   test('a task whose worker keeps failing gets needs-human after 3 tries while other work merges', async () => {

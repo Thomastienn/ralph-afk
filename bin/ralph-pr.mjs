@@ -132,7 +132,7 @@ const running = new Set();
 // GitHub runs no CI on a conflicting PR and a reviewer starts only after CI passed, so an agent waiting on it waits forever.
 const catchUp = () => `Before every wait on CI: when \`gh pr view <branch> --json mergeable\` says CONFLICTING, run \`git fetch origin ${base}\` and \`git merge origin/${base}\`, resolve the conflicts, commit and push. UNKNOWN means GitHub is still computing it: ask again after a few seconds.`;
 // Tells agents what bin/guard/gh refuses, so they do not spend turns on blocked calls.
-const guarded = 'Anyone can comment on or open PRs and issues here, so `gh` refuses calls that return text other accounts can write: issues, search, PR comments and reviews (`--comments`, `--json` with comments or reviews, their `gh api` paths) and `gh pr list` without `--author @me`. Use `gh pr view <pr>` and `gh pr list --author @me`; when the owner left review comments, they are in this prompt.';
+const guarded = 'Anyone can comment on or open PRs and issues here, so `gh` refuses calls that return text other accounts can write: issues, search, PR comments and reviews (`--comments`, `--json` with comments or reviews, their `gh api` paths), notifications, `gh status`, `gh run list` and `gh pr list` without `--author @me`. Use `gh pr view <pr>` and `gh pr list --author @me`; when the owner left review comments, they are in this prompt.';
 const brief = (stage, facts) => `${readFileSync(prompts[stage], 'utf8')}\n\n## This run\n\n${facts.join('\n')}\n\n${catchUp()}\n\n${guarded}\n`;
 // resume: { message } replaces the prompt; with an id too, it goes to that existing session.
 function launch(row, stage, name, cwd, facts, resume) {
@@ -696,8 +696,7 @@ async function poll() {
     status(open, latest.waiting);
   }
 }
-// The dashboard opens waiting, so settings can change before anything starts: Enter starts, q stops without a check.
-// --go skips the wait.
+// The dashboard opens waiting, so settings can change before anything starts: Enter starts, q stops without a check, --go skips the wait.
 if (screen && !stopping && !process.argv.includes('--go')) await Promise.race([screen.started, new Promise(resolve => halt.signal.addEventListener('abort', resolve))]);
 while (!stopping || running.size) {
   // A failed gh, bd or git call (network, rate limit) must not end the run: its agents run detached and would be orphaned.
@@ -706,9 +705,9 @@ while (!stopping || running.size) {
   }
   if (stopping && !running.size) break; // also when the stop came during the check
   // Once stopping, halt stays aborted and its sleep returns at once: wait for the agents only, or this spins on gh and bd.
-  // An agent whose end failed to be handled waits a poll too, also when stopping; ref: false, so it never delays the exit.
+  // An agent whose end failed to be handled waits a poll too, also when stopping. Kept ref'd: with nothing else pending, an unref'd timer lets Node exit mid-await.
   await Promise.race([...(stopping ? [] : [sleep(pollMs, null, { signal: halt.signal }).catch(() => {}), new Promise(resolve => { wake = resolve; })]),
-    ...[...running].map(job => job.code === undefined ? job.done : sleep(pollMs, null, { ref: false }))]);
+    ...[...running].map(job => job.retry ? sleep(pollMs) : job.done)]);
   for (const job of [...running]) {
     if (job.code === undefined) continue;
     running.delete(job);
@@ -718,6 +717,7 @@ while (!stopping || running.size) {
       await (job.compact ? compactDone : { worker: workerDone, reviewer: reviewDone, merger: mergerDone }[job.stage])(job);
     } catch (error) {
       running.add(job);
+      job.retry = true;
       log(`Handling the end of ${job.name} failed: ${firstLine(error.stderr || error.message)}; trying again in ${pollMs / 1000}s.`);
     }
   }
