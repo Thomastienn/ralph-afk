@@ -123,11 +123,14 @@ test('a scheduled agent with no worker line never launches; a schedule typo is r
   assert.deepEqual(f.runs(), ['run --headless --epic TreeTutor-sh8 --iterations 1 --agent codex --model gpt-6.2-sol']);
   assert.ok(!f.read('probes').includes('claude'));
 
-  const unknown = fixture();
-  const refused = unknown.run({ RALPH_AGENTS: unknown.table('schedule|00-24=claude,nobody') });
-  assert.equal(refused.status, 1);
-  assert.match(refused.stderr, /Unknown agent in the agents file's schedule: nobody/);
-  assert.deepEqual(unknown.runs(), []);
+  // The same check as --pr: a trailing comma once passed here but not there.
+  for (const schedule of ['schedule|00-24=claude,nobody', 'schedule|00-24=claude,']) {
+    const unknown = fixture();
+    const refused = unknown.run({ RALPH_AGENTS: unknown.table(schedule) });
+    assert.equal(refused.status, 1, schedule);
+    assert.match(refused.stderr, /agents-set line 1: schedule must be space-separated FROM-TO=agents windows, agents claude or codex/, schedule);
+    assert.deepEqual(unknown.runs(), []);
+  }
 });
 
 test("a checkout's own .ralph-tui/agents overrides the shared agents file", () => {
@@ -146,7 +149,7 @@ test('an agents line with another stage, agent or field count is refused at star
     writeFileSync(old, `# comment\n\nworker|codex|m|-\n${line}\n`);
     const result = f.run({ RALPH_AGENTS: old });
     assert.equal(result.status, 1, line);
-    assert.match(result.stderr, /old-agents line 4: expected stage\|agent\|model\|effort/, line);
+    assert.match(result.stderr, /old-agents line 4: (expected stage\|agent\|model\|effort|\w+ must be )/, line);
   }
   assert.deepEqual(f.runs(), []);
 });

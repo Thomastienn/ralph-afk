@@ -1,6 +1,8 @@
 // The agents file: agent lines, mode lines (worker|human, reviewer|human, reviewer|none) and settings.
 // ralph-pr.mjs reads it at start and again whenever it changes; the dashboard's settings view edits it one line
-// at a time, so comments and line order stay. bin/ralph-afk checks the same lines with awk: keep the two in sync.
+// at a time, so comments and line order stay. bin/ralph-afk runs `node ralph-agents.mjs FILE` to check the file.
+import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
 // The settings a file may leave out. bin/ralph-afk keeps its own copy of the schedule and wait defaults.
 export const DEFAULTS = { workers: '3', reviewers: '2', tries: '3', 'slow-every': '5', schedule: '00-24=claude,codex', wait: '600', poll: '120' };
@@ -54,4 +56,9 @@ export function edit(text, target, value) {
   const next = lines.join('\n');
   parseAgents(next);
   return next;
+}
+
+// `node ralph-agents.mjs FILE` exits 1 and names the first bad line.
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  try { parseAgents(readFileSync(process.argv[2], 'utf8')); } catch (error) { console.error(`${process.argv[2]} ${error.message} (see agents.example).`); process.exit(1); }
 }
