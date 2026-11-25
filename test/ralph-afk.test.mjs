@@ -139,7 +139,7 @@ test('an agents line with another stage, agent or field count is refused at star
   const f = fixture();
   const old = join(f.cwd, 'old-agents');
   // The retired ralph stage, an agent with no built-in probe, and the retired probe column.
-  for (const line of ['ralph|claude|opus|-', 'worker|cursor|auto|-', 'worker|claude|opus|-|echo pong', 'workers|0', 'workers|two', 'reviewer|human|-|-', 'worker|human|-|-']) {
+  for (const line of ['ralph|claude|opus|-', 'worker|cursor|auto|-', 'worker|claude|opus|-|echo pong', 'workers|0', 'workers|two', 'reviewers|0', 'merger|human', 'reviewer|human|-|-', 'worker|human|-|-']) {
     writeFileSync(old, `# comment\n\nworker|codex|m|-\n${line}\n`);
     const result = f.run({ RALPH_AGENTS: old });
     assert.equal(result.status, 1, line);
@@ -148,7 +148,7 @@ test('an agents line with another stage, agent or field count is refused at star
   assert.deepEqual(f.runs(), []);
 });
 
-test('the retired -a option is refused; sequential mode ignores workers|N, worker|human and reviewer|human lines', () => {
+test('the retired -a option is refused; sequential mode ignores workers|N, reviewers|N, worker|human, reviewer|human and merger lines', () => {
   const f = fixture({ 'TreeTutor-sh8': 1 });
   const retired = f.run({}, ['-a', 'codex']);
   assert.equal(retired.status, 2);
@@ -156,7 +156,7 @@ test('the retired -a option is refused; sequential mode ignores workers|N, worke
   assert.deepEqual(f.runs(), []);
 
   const table = join(f.cwd, 'counted');
-  writeFileSync(table, 'workers|5\nworker|human\nworker|codex|gpt-6.2-sol|-\nreviewer|human\n');
+  writeFileSync(table, 'workers|5\nreviewers|3\nworker|human\nworker|codex|gpt-6.2-sol|-\nreviewer|human\nmerger|codex|m|-\n');
   const result = f.run({ RALPH_AGENTS: table, RALPH_AFK_SCHEDULE: '00-24=codex' });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(f.runs(), ['run --headless --epic TreeTutor-sh8 --iterations 1 --agent codex --model gpt-6.2-sol']);

@@ -10,7 +10,7 @@ of usage, they switch to another and wait for limits to reset.
 | --- | --- |
 | `ralph` | One headless Ralph run on one epic. |
 | `ralph-afk` | Works every ready epic, one task at a time, switching agents on usage limits. |
-| `ralph-afk --pr` | Parallel workers (agents, or you), one PR per task; a reviewer agent, or you, merges once CI passes. |
+| `ralph-afk --pr` | Parallel workers (agents, or you), one PR per task; parallel reviewer agents approve, or you merge; approved green PRs merge. |
 | `ralph-afk --init` | One-time setup of a new project's checkout. |
 
 ## Requirements
@@ -83,7 +83,7 @@ agent.
 
 | Field | Meaning |
 | --- | --- |
-| `stage` | `worker`: `ralph`, `ralph-afk`, `--pr` workers. `reviewer`: `--pr` reviewer only. |
+| `stage` | `worker`: `ralph`, `ralph-afk`, `--pr` workers. `reviewer`: `--pr` reviewers only. `merger`: the `--pr` agent that merges the base into conflicting PRs. |
 | `agent` | `claude` or `codex`. Anything else is refused at start. |
 | `model` | Work model, passed as `--model`. `RALPH_<AGENT>_MODEL` (e.g. `RALPH_CODEX_MODEL`) overrides it for `ralph` and `ralph-afk`. |
 | `effort` | Reasoning effort for `--pr` agents; `-` keeps the CLI default. Ignored by `ralph` and `ralph-afk`. |
@@ -92,7 +92,11 @@ In `--pr` mode, line order within a stage is the fallback order.
 
 An optional `workers|N` line sets the number of `--pr` workers, a whole
 number from 1. The default is 3. `ralph` and `ralph-afk` without `--pr`
-ignore it, as they ignore `reviewer` lines.
+ignore it, as they ignore `reviewer` and `merger` lines.
+
+An optional `reviewers|N` line sets how many `--pr` reviewers run at once, a
+whole number from 1. The default is 2. Without `merger` lines, the `worker`
+lines do the merger's job.
 
 A `reviewer|human` line means you review the `--pr` PRs on GitHub yourself;
 see [You as the reviewer](#you-as-the-reviewer). The other `reviewer` lines
@@ -226,9 +230,21 @@ agents. For only Codex, comment out the Claude lines; Codex then needs a
 `reviewer` line too.
 
 Each worker takes a ready task into its own worktree and branch, opens a PR
-and waits for CI. One reviewer at a time reviews, fixes and squash-merges PRs
-whose checks all passed. It takes first the PR whose task blocks the most open
+and waits for CI. Up to `reviewers|N` reviewers at once review and fix PRs
+whose checks all passed, then label the task `approved` and end, without
+waiting for CI. They take first the PR whose task blocks the most open
 tasks, counting the tasks those block in turn; the oldest PR on a tie.
+
+- The supervisor squash-merges an approved PR once its CI passes, with the
+  subject `task: <task> <title>`, one PR per check in the same order: each
+  merge can make the others conflict. No agent runs for this.
+- An approved PR that conflicts with the base gets the merger agent, one at a
+  time. It merges `origin/<base>` into the PR, resolves the conflicts from
+  both sides' task descriptions (`prompts/pr-merger.md`), runs the tests for
+  the conflicted code, pushes and ends. The PR merges once its CI passes.
+- An approved PR whose CI goes red (after a reviewer's fix or the merger's
+  merge) loses `approved` and goes back to a reviewer. After 3 times the task
+  gets `needs-human`.
 
 - At start, the local default branch is pushed to `origin` so workers branch
   from your latest planning commits. A changed `.beads/issues.jsonl` is
@@ -244,8 +260,8 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
   transcript in `~/.claude/projects/` (or `$CLAUDE_CONFIG_DIR/projects/`).
   Codex steps are the lines Codex writes to its log.
 - In a terminal, a dashboard fills the screen. The header shows busy workers,
-  the reviewer, ready tasks and merges. Below it is one numbered panel per
-  running agent: its task or PR, model, effort, context size,
+  the reviewers, the merger, ready tasks and merges. Below it is one
+  numbered panel per running agent: its task or PR, model, effort, context size,
   minutes so far and last 5 steps. At
   the bottom are the open PRs with their labels and CI state, then the
   supervisor log. A panel keeps its number while its agent runs.
@@ -253,8 +269,8 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
     lines wrap. A panel cuts its title before its agent and minutes. Panels
     lose steps and PRs lose lines before the newest 3 log lines leave the
     screen.
-  - Colour marks state: workers cyan, the reviewer magenta, errors and
-    failures red, passed CI and merges green, running CI yellow. Older steps
+  - Colour marks state: workers cyan, reviewers magenta, the merger blue,
+    errors and failures red, passed CI and merges green, running CI yellow. Older steps
     are dim, so the newest stands out. The header turns yellow while
     stopping. `NO_COLOR` turns colour off.
   - `1`-`9` opens that agent full screen with all its steps; `↑`/`↓`
@@ -274,12 +290,12 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
 - After a merge, the task closes and its branch and worktree are removed. The
   main checkout fast-forwards if it is on the default branch with no local
   changes.
-- The supervisor's own worktree adds, reviewer checkouts, pulls and branch
-  deletes run without Git hooks. Beads' hooks take about 15 s each and only
+- The supervisor's own worktree adds, reviewer and merger checkouts, pulls
+  and branch deletes run without Git hooks. Beads' hooks take about 15 s each and only
   re-import the export, so with them the next review started up to a minute
   after a merge. Agents' own commits and pushes still run every hook.
 - Every 5 merges, `slow-tests.yml` is dispatched. A failure files a fix task.
-- Every worker and reviewer prompt ends with a catch-up rule: when the PR
+- Every agent prompt ends with a catch-up rule: when the PR
   conflicts with the base, merge `origin/<base>` and push before waiting on CI.
   GitHub runs no CI on a conflicting PR, so without it the agent waits forever.
 - Only your own PRs and comments reach agents. `--pr` lists only PRs opened by
@@ -290,7 +306,7 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
   says so, and a fixing worker gets your comments in its prompt instead.
 - A PR labelled `in-review` whose CI failed before any review gets
   `needs-human`, not a reviewer. To hand it back to a worker, remove both
-  labels. Once a reviewer has started a PR, red CI goes back to the reviewer,
+  labels. Once a reviewer has started a PR, red CI goes back to a reviewer,
   up to 3 runs, also after a restart (`.ralph-tui/pr-logs/reviewed.json`).
 - A task or PR whose agent fails 3 times gets `needs-human`. Other work
   continues. These items are listed when it runs out of work and at the end.
@@ -309,17 +325,20 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
 
 ### Prompts
 
-Workers and reviewers run with `prompts/pr-worker.md` and
-`prompts/pr-reviewer.md` from this repository. A checkout's own
-`.ralph-tui/pr-worker.md` or `.ralph-tui/pr-reviewer.md` replaces the
-built-in one for that project; copy the built-in one there to start.
+Workers, reviewers and the merger run with `prompts/pr-worker.md`,
+`prompts/pr-reviewer.md` and `prompts/pr-merger.md` from this repository. A
+checkout's own `.ralph-tui/pr-<stage>.md` replaces the built-in one for that
+project; copy the built-in one there to start.
 
 - The worker prompt fits any project: it reads the task, implements it, runs
   the tests the project's docs name, opens the PR and waits for green CI.
 - The reviewer prompt makes a Claude reviewer review with the
   `ponytail:ponytail-review` skill (from the ponytail plugin), then fix and
-  merge. Codex has no skills, so a Codex reviewer uses the prompt's checklist
-  alone.
+  approve. Codex has no skills, so a Codex reviewer uses the prompt's checklist
+  alone. A project's own reviewer prompt that still merges keeps working: the
+  merged PR's task closes as after any merge.
+- The merger prompt merges the base into one approved PR and resolves the
+  conflicts so both tasks' intent survives; it does not review again.
 
 ### You as the worker
 
@@ -329,8 +348,8 @@ worker prompt is not used:
 1. Pick a ready task, make a branch named after its ID (e.g. `TreeTutor-7t3`),
    push it and open a PR.
 2. Once all its checks pass, the supervisor sets the task to `in_progress`,
-   labels it `in-review` and the AI reviewer reviews, fixes and squash-merges
-   it, as for a worker's PR. You add no labels.
+   labels it `in-review`, and the AI reviewers review, fix and approve it, as
+   for a worker's PR. You add no labels.
 3. After the merge the task closes and its branch is removed from `origin`
    and from your checkout, unless you have it checked out.
 
@@ -339,6 +358,8 @@ worker prompt is not used:
 - Uncommitted changes in your checkout do not stop the run, since no worker
   branches from it.
 - The dashboard header says `worker you`.
+- The merger uses the `merger` lines; with `worker|human` and none, a
+  conflicting approved PR waits, so add one.
 
 ### You as the reviewer
 
@@ -378,9 +399,9 @@ reviewer prompt is not used:
 2. The supervisor squash-merges it with the subject `task: <task> <title>`.
    It merges one PR per check, in the reviewer's order (the PR that unblocks
    the most tasks first), since each merge can make the others conflict.
-3. A PR that conflicts with the base loses `in-review` and goes back to the
-   ready queue. The next worker resumes from the open PR, merges the base,
-   waits for CI and labels it `in-review` again.
+3. A PR that conflicts with the base gets the merger agent, as an approved
+   PR does without `reviewer|none`. Once its merge is pushed and CI passes,
+   the PR merges.
 
 - A merge that fails for another reason (e.g. branch protection) counts as a
   failed run; after 3 the task gets `needs-human`.

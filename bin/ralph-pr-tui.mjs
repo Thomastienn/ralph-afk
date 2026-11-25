@@ -9,7 +9,7 @@ export const agentLabel = job => [job.agent, job.model, job.effort, job.context 
 const STEPS = 5; // steps per panel in the overview
 const bodyRows = rows => Math.max(1, rows - 4); // detail view: everything but its title bar, path line, rule and key line
 // SGR codes from the terminal's own 16 colours, so light and dark themes both keep their contrast.
-const STAGE = { worker: '36', reviewer: '35' }; // cyan, magenta
+const STAGE = { worker: '36', reviewer: '35', merger: '34' }; // cyan, magenta, blue
 const STATE = { 'CI passed': '32', 'CI failed': '31', 'CI running': '33', 'no CI yet': '2', 'needs-human': '1;31' };
 const tone = text => /fail|could not|exited|needs a human|needs-human|not usable/i.test(text) ? '31' : /^Merged|passed/.test(text) ? '32' : '';
 

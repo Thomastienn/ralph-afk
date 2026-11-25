@@ -10,14 +10,14 @@ const jobs = [
   { slot: 2, stage: 'reviewer', PR: '#41', Task: 'rt-9', Title: 'Rate-limit login endpoint', agent: 'codex', model: 'gpt-5', effort: 'medium', context: 52800, started: ago(6),
     file: '/home/me/app/.ralph-tui/logs/rt-9-review.jsonl',
     steps: ['Bash: gh pr diff 41', 'Read: src/auth/limit.ts', 'error: test auth/limit.test.ts failed (expected 429, got 200)', 'Edit: src/auth/limit.ts', 'Bash: npm test -- auth'] },
-  { slot: 3, stage: 'worker', Task: 'rt-15', Title: 'Fix timezone bug in invoice dates', agent: 'claude', model: 'sonnet', effort: 'high', context: 31200, started: ago(2),
-    file: '/home/me/app/.ralph-tui/logs/rt-15.jsonl', steps: ['Read: src/invoice/date.ts', 'Grep: toLocaleDateString'] },
+  { slot: 3, stage: 'merger', PR: '#43', Task: 'rt-11', Title: 'Show invoice totals per client', agent: 'claude', model: 'sonnet', effort: 'medium', context: 31200, started: ago(2),
+    file: '/home/me/app/.ralph-tui/logs/merge-43.jsonl', steps: ['Bash: git merge origin/master', 'Bash: bd show rt-8 --json', 'Edit: src/invoice/totals.ts'] },
 ];
-const prs = ['PR #41 rt-9: CI failed, reviewer running', 'PR #43 rt-11: CI passed', 'PR #44 rt-10: CI running', 'PR #38 rt-7 [needs-human]: CI failed'];
+const prs = ['PR #41 rt-9 [in-review]: CI failed, reviewer running', 'PR #43 rt-11 [in-review, approved]: CI passed, merger running', 'PR #44 rt-10 [in-review, approved]: CI running', 'PR #38 rt-7 [needs-human]: CI failed'];
 const logs = ['14:18:02 Started worker 1 on rt-12 (claude opus high).', '14:24:40 Merged PR #40 (rt-8).', '14:26:11 Started reviewer 2 on PR #41 (codex gpt-5 medium).',
-  '14:28:57 PR #38: claude exited with 1 without merging.', '14:30:03 Started worker 3 on rt-15 (claude sonnet high).'];
+  '14:28:57 PR #38: claude exited with 1 without approving.', '14:30:03 PR #43 (rt-11) conflicts with master; the merger merges master into it.'];
 const [cols, rows] = [100, 30];
-const view = { header: ['master', '3/3 agents', '12 tasks left'], jobs, prs, logs, now };
+const view = { header: ['master', '1/3 workers busy', '1/2 reviewers busy', 'merger busy', '12 ready', '7 merged'], jobs, prs, logs, now };
 const lines = render(process.argv[2] === 'focus' ? { ...view, focus: jobs[1] } : view, cols, rows);
 
 // ANSI to SVG for the few SGR codes render() uses: 0, 1, 2, 7 and 31-36.

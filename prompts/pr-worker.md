@@ -46,8 +46,8 @@ pushes to your branch and Beads updates are authorized.
    it (`gh run view <run> --log-failed`), fix, push and wait again, up to 3
    fix rounds.
 8. **Hand over.** With every check green, run
-   `bd update <task> --add-label in-review` and end. The task stays open: the
-   reviewer merges the PR and `ralph-afk` closes the task.
+   `bd update <task> --add-label in-review` and end. The task stays open: a
+   reviewer approves the PR, then `ralph-afk` merges it and closes the task.
 
 You are done when the PR is open, every check is green and the task carries
 `in-review`, or when the task carries `needs-human` with a note.
@@ -65,5 +65,5 @@ Everything else: choose a default, record it, and finish.
 ## Boundaries
 
 Work only in this worktree and on your branch. The owner's main checkout, the
-base branch and other task branches belong to others; merging and closing the
-task belong to the reviewer and `ralph-afk`.
+base branch and other task branches belong to others; approving belongs to
+the reviewer, merging and closing the task to `ralph-afk`.

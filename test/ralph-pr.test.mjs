@@ -7,7 +7,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Real Git with a bare origin; fake bd, gh and agents (no model calls). Agents finish their job at once:
-// a worker commits, pushes, opens a PR and labels the task in-review; the reviewer merges the PR.
+// a worker commits, pushes, opens a PR and labels the task in-review; a reviewer labels it approved; the merger
+// marks a conflicting PR mergeable. The supervisor merges approved PRs.
 const fakeBd = `const fs = require('fs');
 const file = process.env.FIX + '/issues.json';
 const issues = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -67,11 +68,13 @@ switch (args.slice(0, 2).join(' ')) {
     prs.push({ mergeable: (process.env.FIXTURE_CONFLICT || '').split(' ').includes(flag('--head')) ? 'CONFLICTING' : 'MERGEABLE',  number: prs.length + 1, headRefName: flag('--head'), title: flag('--title'), state: 'OPEN', author: { login: 'owner' }, reviews: [], comments: [], commits: [{ committedDate: new Date().toISOString() }], statusCheckRollup: [{ status: 'COMPLETED', conclusion: (process.env.FIXTURE_RED || '').split(' ').includes(flag('--head')) ? 'FAILURE' : 'SUCCESS' }] });
     write('prs.json', prs); break;
   }
-  case 'pr list': out(prs.filter(pr => (flag('--state') === 'all' || pr.state === 'OPEN') && (!args.includes('--head') || pr.headRefName === flag('--head')) && (!args.includes('--author') || pr.author.login === flag('--author')))); break;
+  case 'pr list': out(prs.map(pr => ({ mergeable: 'MERGEABLE', ...pr })).filter(pr => (flag('--state') === 'all' || pr.state === 'OPEN') && (!args.includes('--head') || pr.headRefName === flag('--head')) && (!args.includes('--author') || pr.author.login === flag('--author')))); break;
   case 'api user': console.log('owner'); break;
   case 'api --paginate': for (const comment of read('inline.json', [])) console.log(JSON.stringify(comment)); break; // a PR's inline comments
   case 'pr fail': prs[args[2] - 1].statusCheckRollup[0].conclusion = 'FAILURE'; write('prs.json', prs); break; // fixture only: CI goes red
-  case 'pr view': out({ state: prs[args[2] - 1].state }); break;
+  case 'pr pass': prs[args[2] - 1].statusCheckRollup[0].conclusion = 'SUCCESS'; write('prs.json', prs); break; // fixture only: CI goes green
+  case 'pr resolve': prs[args[2] - 1].mergeable = 'MERGEABLE'; write('prs.json', prs); break; // fixture only: the base is merged in
+  case 'pr view': out({ state: prs[args[2] - 1].state, mergeable: prs[args[2] - 1].mergeable ?? 'MERGEABLE' }); break;
   case 'pr merge': prs[args[2] - 1].state = 'MERGED'; write('prs.json', prs); fs.appendFileSync(process.env.FIX + '/merges', args[2] + '\\n'); break;
   case 'workflow run':
     fs.appendFileSync(process.env.FIX + '/dispatches', args.join(' ') + '\\n');
@@ -108,16 +111,21 @@ if [[ $prompt == *'The owner reviewed PR #'* ]]; then
   echo fix >> fix.txt && git add fix.txt && git commit -qm fix && git push -q origin HEAD
   echo "$session" >> "$FIX/fixes"; exit
 fi
-if [[ $prompt == *'PR: #'* ]]; then
-  [[ ! -e "$FIX/reviewing" ]] || echo overlap >> "$FIX/overlap"
-  touch "$FIX/reviewing"; /usr/bin/sleep 0.2
-  # FIXTURE_REVIEW_RED: the first review pushes a fix whose CI goes red, then gives up.
+pr=$(sed -n 's/^PR: #//p' <<< "$prompt")
+if [[ $prompt == *'# PR merger'* ]]; then
+  echo "$pr" >> "$FIX/merger"; gh pr resolve "$pr"; exit
+fi
+if [[ -n $pr ]]; then
+  # How many reviews run at once, counting this one.
+  mkdir -p "$FIX/reviewing"; touch "$FIX/reviewing/$pr"; ls "$FIX/reviewing" | wc -l >> "$FIX/concurrent"; /usr/bin/sleep 0.2
+  # FIXTURE_REVIEW_RED: the first review pushes a fix whose CI goes red, and approves.
   if [[ -n $FIXTURE_REVIEW_RED && ! -e "$FIX/review-red" ]]; then
-    touch "$FIX/review-red"; gh pr fail "$(sed -n 's/^PR: #//p' <<< "$prompt")"; /usr/bin/sleep 0.3
-    rm "$FIX/reviewing"; exit 1
+    touch "$FIX/review-red"; gh pr fail "$pr"; /usr/bin/sleep 0.3
+  else
+    gh pr pass "$pr"
   fi
-  gh pr merge "$(sed -n 's/^PR: #//p' <<< "$prompt")" --squash
-  rm "$FIX/reviewing"; exit
+  bd update "$task" --add-label approved
+  rm "$FIX/reviewing/$pr"; exit
 fi
 [[ -z $FIXTURE_WORKER_SLEEP ]] || { echo $$ >> "$FIX/pids"; /usr/bin/sleep "$FIXTURE_WORKER_SLEEP"; }
 [[ " $FIXTURE_FAIL " != *" $task "* ]] || exit 1
@@ -146,6 +154,7 @@ function fixture(issues) {
   for (const dir of [join(cwd, '.ralph-tui'), join(fix, 'bin')]) mkdirSync(dir, { recursive: true });
   writeFileSync(join(cwd, '.ralph-tui/pr-worker.md'), '# Worker prompt\n');
   writeFileSync(join(cwd, '.ralph-tui/pr-reviewer.md'), '# Reviewer prompt\n');
+  writeFileSync(join(cwd, '.ralph-tui/pr-merger.md'), '# PR merger\n');
   writeFileSync(join(fix, 'issues.json'), JSON.stringify(issues));
   const bin = (name, body) => writeFileSync(join(fix, 'bin', name), body, { mode: 0o755 });
   writeFileSync(join(fix, 'bd.cjs'), fakeBd);
@@ -177,15 +186,15 @@ function fixture(issues) {
   return { base, cwd, fix, git, run, start, read, issue, claims: () => read('bd-calls').filter(call => call.endsWith('--claim')) };
 }
 
-test('workers open one PR per task, oldest epic first; one reviewer at a time merges them and cleans up', async () => {
+test('workers open one PR per task, oldest epic first; up to 2 reviewers approve them; merged PRs are cleaned up', async () => {
   const f = fixture([epic('E2', '2026-01-02'), task('E2.1', 'E2'), epic('E1', '2026-01-01'), task('E1.1', 'E1'), task('E1.2', 'E1')]);
   const table = join(f.base, 'agents');
   writeFileSync(table, `workers|2\n${readFileSync(new URL('../agents.example', import.meta.url), 'utf8')}`);
   const result = await f.run({ RALPH_AGENTS: table });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(f.claims(), ['update E1.1 --claim', 'update E1.2 --claim', 'update E2.1 --claim']);
-  assert.deepEqual(f.read('merges'), ['1', '2', '3']);
-  assert.deepEqual(f.read('overlap'), []);
+  assert.deepEqual(f.read('merges').sort(), ['1', '2', '3']);
+  assert.ok(f.read('concurrent').every(n => Number(n) <= 2), f.read('concurrent').join(' '));
   // Every worker and reviewer is told to merge the base into a conflicting PR, whatever the project's prompts say.
   const prompts = readFileSync(join(f.fix, 'prompts'), 'utf8').split(/^(?=# (?:Worker|Reviewer) prompt$)/m);
   assert.equal(prompts.length, 6, prompts.join('\n---\n'));
@@ -202,7 +211,7 @@ test('workers open one PR per task, oldest epic first; one reviewer at a time me
   // The fake reviewer reads the task line too, so match the reviewer's model instead.
   assert.equal(agents.filter(line => / -p --permission-mode auto --model opus --effort high --session-id [0-9a-f-]{36}$/.test(line)).length, 3, agents.join('\n'));
   assert.match(result.stdout, /Out of work\. Checking for new tasks every 0\.05s/);
-  assert.match(result.stdout, /Status: \d of 2 workers busy, reviewer (busy|free); \d ready tasks waiting; \d merged this run\.\n {2}worker E\d\.\d \(claude sonnet high( 3k ctx)?, 0m\): /);
+  assert.match(result.stdout, /Status: \d of 2 workers busy, \d of 2 reviewers busy, merger (busy|free); \d ready tasks waiting; \d merged this run\.\n {2}worker E\d\.\d \(claude sonnet high( 3k ctx)?, 0m\): /);
   assert.match(result.stdout, /\n {2}PR #1 E1\.1( \[in-review\])?: CI passed/);
   for (const id of ['E1.1', 'E1.2', 'E2.1', 'review-1']) {
     assert.match(result.stdout, new RegExp(`\\] ${id}: Bash: Run tests\\n.*\\] ${id}: error: boom\\n`), id);
@@ -211,7 +220,7 @@ test('workers open one PR per task, oldest epic first; one reviewer at a time me
 
 test('--pr uses the built-in prompts when the checkout has none', async () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1')]);
-  for (const stage of ['worker', 'reviewer']) rmSync(join(f.cwd, `.ralph-tui/pr-${stage}.md`));
+  for (const stage of ['worker', 'reviewer', 'merger']) rmSync(join(f.cwd, `.ralph-tui/pr-${stage}.md`));
   const result = await f.run();
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(f.read('merges'), ['1']);
@@ -396,7 +405,10 @@ test('the reviewer takes the PR that unblocks the most tasks first, counting the
     task('E1.6', 'E1', { status: 'blocked', dependencies: [{ depends_on_id: 'E1.1', type: 'related' }] })]);
   const pr = (number, id) => ({ number, headRefName: id, title: id, state: 'OPEN', author: { login: 'owner' }, reviews: [], comments: [], statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }] });
   writeFileSync(join(f.fix, 'prs.json'), JSON.stringify([pr(1, 'E1.1'), pr(2, 'E1.2')]));
-  const result = await f.run();
+  // One reviewer, so PRs are approved, and merged, in review order.
+  const table = join(f.base, 'agents');
+  writeFileSync(table, `reviewers|1\n${readFileSync(new URL('../agents.example', import.meta.url), 'utf8')}`);
+  const result = await f.run({ RALPH_AGENTS: table });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(f.read('merges'), ['2', '1']);
 });
@@ -423,10 +435,12 @@ test('the reviewer takes only PRs whose CI passed; a red PR in review gets needs
   assert.match(result.stdout, /is in review but its CI failed; labelled needs-human/);
 });
 
-test('a reviewer whose fix turns CI red keeps the PR and runs again', async () => {
+test('an approved PR whose CI goes red goes back to a reviewer and merges once green', async () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1')]);
   const result = await f.run({ FIXTURE_REVIEW_RED: '1' });
   assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /PR #1 \(E1\.1\): CI failed after the review; back to a reviewer\./);
+  assert.deepEqual(f.read('merges'), ['1']);
   assert.ok(!f.issue('E1.1').labels.includes('needs-human'));
   assert.equal(f.issue('E1.1').status, 'closed');
   assert.equal(f.read('agents').filter(line => /^claude E1\.1 .*--model opus/.test(line)).length, 2);
@@ -540,7 +554,7 @@ test('worker|human: no worker runs; your PR is reviewed once its CI passes, a re
   writeFileSync(join(f.fix, 'prs.json'), JSON.stringify([pr(1, 'E1.1', 'SUCCESS'), pr(2, 'E1.2', 'FAILURE')]));
   const result = await f.run({ RALPH_AGENTS: table }, [], out => /Merged PR #1/.test(out));
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /you write the code, one reviewer/);
+  assert.match(result.stdout, /you write the code, up to 2 reviewers/);
   assert.match(result.stdout, /PR #1 \(E1\.1\): CI passed; in review\./);
   assert.deepEqual(f.claims(), []);
   const agents = f.read('agents');
@@ -552,7 +566,7 @@ test('worker|human: no worker runs; your PR is reviewed once its CI passes, a re
   assert.equal(f.issue('E1.3').status, 'open');
 });
 
-test('reviewer|none: no reviewer runs; a green PR merges at once, a conflicting one goes back to a worker first', async () => {
+test('reviewer|none: no reviewer runs; a green PR merges at once; without merger lines a worker agent merges the base into a conflicting one', async () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1'), task('E1.2', 'E1')]);
   const table = join(f.base, 'agents');
   writeFileSync(table, 'worker|claude|sonnet|high\nreviewer|none\n');
@@ -560,11 +574,28 @@ test('reviewer|none: no reviewer runs; a green PR merges at once, a conflicting 
   const result = await f.run({ RALPH_AGENTS: table, FIXTURE_CONFLICT: 'E1.1' });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /no reviewer, green PRs merge at once/);
-  assert.match(result.stdout, /PR #1 \(E1\.1\) conflicts with master; a worker merges master into it\./);
-  assert.deepEqual(f.claims(), ['update E1.1 --claim', 'update E1.2 --claim', 'update E1.1 --claim']);
+  assert.match(result.stdout, /PR #1 \(E1\.1\) conflicts with master; the merger merges master into it\./);
+  assert.deepEqual(f.claims(), ['update E1.1 --claim', 'update E1.2 --claim']);
+  assert.deepEqual(f.read('merger'), ['1']);
   const agents = f.read('agents');
   assert.equal(agents.filter(line => / -p --permission-mode auto --model sonnet /.test(line)).length, 3, agents.join('\n'));
   assert.equal(agents.length, 3, agents.join('\n'));
+  assert.deepEqual(f.read('merges'), ['2', '1']);
+  for (const id of ['E1.1', 'E1.2']) assert.equal(f.issue(id).status, 'closed', id);
+});
+
+test('2 reviewers run at once; a conflicting approved PR gets the merger agent, then merges', async () => {
+  const review = { status: 'in_progress', labels: ['in-review'] };
+  const f = fixture([epic('E1'), task('E1.1', 'E1', review), task('E1.2', 'E1', review)]);
+  const pr = (number, id, mergeable) => ({ number, headRefName: id, title: id, state: 'OPEN', mergeable, author: { login: 'owner' }, reviews: [], comments: [], statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }] });
+  writeFileSync(join(f.fix, 'prs.json'), JSON.stringify([pr(1, 'E1.1', 'CONFLICTING'), pr(2, 'E1.2', 'MERGEABLE')]));
+  const result = await f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(f.read('concurrent').includes('2'), f.read('concurrent').join(' '));
+  assert.match(result.stdout, /PR #1 \(E1\.1\) conflicts with master; the merger merges master into it\./);
+  assert.deepEqual(f.read('merger'), ['1']);
+  // The merger line of agents.example, not a worker or reviewer line.
+  assert.equal(f.read('agents').filter(line => / --model sonnet --effort medium /.test(line)).length, 1, f.read('agents').join('\n'));
   assert.deepEqual(f.read('merges'), ['2', '1']);
   for (const id of ['E1.1', 'E1.2']) assert.equal(f.issue(id).status, 'closed', id);
 });
