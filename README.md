@@ -365,9 +365,9 @@ project; copy the built-in one there to start.
 - The worker prompt fits any project: it reads the task, implements it, runs
   the tests the project's docs name, opens the PR and waits for green CI.
 - The reviewer prompt makes a Claude reviewer review with the
-  `ponytail:ponytail-review` skill (from the ponytail plugin), then fix and
-  approve. Codex has no skills, so a Codex reviewer uses the prompt's checklist
-  alone. A project's own reviewer prompt that still merges keeps working: the
+  `ponytail:ponytail-review` skill (from the ponytail plugin) and post the
+  skill's report as the PR comment, then fix and approve. The checklist adds
+  only project checks the skill does not make. A project's own reviewer prompt that still merges keeps working: the
   merged PR's task closes as after any merge.
 - The merger prompt merges the base into one approved PR and resolves the
   conflicts so both tasks' intent survives; it does not review again.

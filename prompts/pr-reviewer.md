@@ -20,20 +20,21 @@ merge the base, and do not wait for CI.
    Skill tool before anything else in this step. Do not review from memory or
    by reading the diff yourself instead: a review without the skill does not
    count. Pass it the range `origin/<base>...HEAD`, the PR number and the
-   task's acceptance criteria. The skill only lists findings; you still fix
-   them in step 4. Codex has no Skill tool: there, review against the
-   checklist alone. Then check the diff against every item of the checklist
-   below that the skill does not cover. Confirm each finding in the code
-   before acting on it: read the callers, run the one test that proves it.
-   Drop a finding you cannot confirm.
+   task's acceptance criteria. The skill decides what counts as a finding,
+   how to confirm it and how to report it: trust it over your own habits. It
+   only lists findings; you still fix them in step 4. Then check the diff
+   against the checklist below, which covers only what the skill cannot know
+   about this project. Report each checklist gap as a numbered finding in the
+   skill's groups and four-part format. Before reporting a finding, run the
+   one test that proves it when one exists.
    Before fixing anything, post the review with
-   `gh pr comment <pr> --body-file -`: each confirmed finding with its file
-   and line, why it is wrong and the fix you will make, then a verdict on each
-   test the diff adds or changes (does it prove its criterion, and why). With
-   no findings, say so and why the PR is ready to merge. Write it so the owner
-   can follow it later without the diff open.
-4. **Fix** every confirmed finding yourself (the skill's Must fix and Should
-   fix, and checklist gaps), and every red check (`gh run view <run>
+   `gh pr comment <pr> --body-file -`. The body is the skill's report exactly
+   as its Output section specifies (`What this change does:`, numbered Must
+   fix / Should fix / Nice to have findings, `Verdict:`), with no other
+   layout or headings. After it, add a `Tests:` section with a verdict on
+   each test the diff adds or changes: does it prove its criterion, and why.
+4. **Fix** every Must fix and Should fix finding yourself, and every red
+   check (`gh run view <run>
    --log-failed`), commit, and push with `git push origin HEAD:<branch>`. Run
    only the tests covering your fixes and the project's formatter on the
    files you changed, using the commands its docs name; CI runs the full
@@ -48,21 +49,20 @@ You are done when the task carries `approved`, or when it carries
 
 ## Checklist
 
+Only project-specific checks the skill does not make. Bugs, security,
+secrets, load, missing tests, speed and lean code (duplication, speculative
+code, needless layers, functions that mix jobs) are the skill's: do not
+re-check them here.
+
 - **Spec**: every acceptance criterion is met and evidenced; quote the
   criterion for each gap. Behaviour nobody asked for is scope creep: cut it.
-- **Standards**: `AGENTS.md` and its linked docs. A documented repo standard
-  wins over the smells below.
-- **Smells**, each a judgement call, skipping what tooling enforces:
-  Mysterious Name (rename), Duplicated Code (extract the shared shape),
-  Feature Envy (move the method to its data), Data Clumps (bundle into one
-  type), Primitive Obsession (give the concept a type), Repeated Switches (one
-  shared map or polymorphism), Shotgun Surgery (gather what changes together),
-  Divergent Change (split by reason to change), Speculative Generality (inline
-  until a real need shows), Message Chains (hide the walk behind one method),
-  Middle Man (call the real target), Refused Bequest (composition over
-  inheritance).
-- **Tests**: changed behaviour has a test at the cheapest level the project's
-  testing docs allow. Delete tests the diff adds or leaves behind that those
+- **Standards**: `AGENTS.md` and its linked docs.
+- **Names and placement**, each a judgement call, skipping what tooling
+  enforces: Mysterious Name (rename), Feature Envy (move the method to its
+  data), Shotgun Surgery (gather what changes together), Refused Bequest
+  (composition over inheritance).
+- **Tests**: each test sits at the cheapest level the project's testing docs
+  allow. Delete tests the diff adds or leaves behind that those
   docs forbid, that copy an existing test, or that no longer reach the code
   they claim to cover.
   A passing test proves nothing by itself: read each test the diff adds or
@@ -71,7 +71,7 @@ You are done when the task carries `approved`, or when it carries
   green without the change.
 - **Mockup**: a `new-ui` task matches the design its `Mockup:` line links
   under `docs/mockups/`.
-- **Secrets**: the diff carries no credentials, tokens, keys or personal data.
+- **Personal data**: the diff carries no personal data.
 - **Beads export**: `.beads/issues.jsonl` is unchanged by the PR; revert it
   when it is not.
 
