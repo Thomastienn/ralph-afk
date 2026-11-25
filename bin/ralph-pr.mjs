@@ -703,12 +703,20 @@ for (;;) {
   }
   if (stopping && !running.size) break; // also when the stop came during the check
   // Once stopping, halt stays aborted and its sleep returns at once: wait for the agents only, or this spins on gh and bd.
-  await Promise.race([...(stopping ? [] : [sleep(pollMs, null, { signal: halt.signal }).catch(() => {}), new Promise(resolve => { wake = resolve; })]), ...[...running].map(job => job.done)]);
-  for (const job of running) {
+  // An agent whose end failed to be handled waits a poll too, also when stopping; ref: false, so it never delays the exit.
+  await Promise.race([...(stopping ? [] : [sleep(pollMs, null, { signal: halt.signal }).catch(() => {}), new Promise(resolve => { wake = resolve; })]),
+    ...[...running].map(job => job.code === undefined ? job.done : sleep(pollMs, null, { ref: false }))]);
+  for (const job of [...running]) {
     if (job.code === undefined) continue;
     running.delete(job);
-    progress(job);
-    await (job.compact ? compactDone : { worker: workerDone, reviewer: reviewDone, merger: mergerDone }[job.stage])(job);
+    // A failed call here must not end the run either: the agent stays in running, so no check acts on its task, and its end is handled again.
+    try {
+      progress(job);
+      await (job.compact ? compactDone : { worker: workerDone, reviewer: reviewDone, merger: mergerDone }[job.stage])(job);
+    } catch (error) {
+      running.add(job);
+      log(`Handling the end of ${job.name} failed: ${firstLine(error.stderr || error.message)}; trying again in ${pollMs / 1000}s.`);
+    }
   }
 }
 

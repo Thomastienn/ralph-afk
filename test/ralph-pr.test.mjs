@@ -59,7 +59,11 @@ const prs = read('prs.json', []);
 if (process.env.FIXTURE_GH_FLAKY && args[0] === 'pr' && args[1] === 'list' && !fs.existsSync(process.env.FIX + '/gh-flaked')) {
   fs.writeFileSync(process.env.FIX + '/gh-flaked', ''); console.error('HTTP 502: Bad Gateway'); process.exit(1);
 }
-// FIXTURE_GH_SLOW: the open-PR list hangs, as a slow network does.
+// FIXTURE_GH_GARBLED: the first pr view, run once an agent ends, prints half a reply, as a cut connection does.
+if (process.env.FIXTURE_GH_GARBLED && args[0] === 'pr' && args[1] === 'view' && !fs.existsSync(process.env.FIX + '/gh-garbled')) {
+  fs.writeFileSync(process.env.FIX + '/gh-garbled', ''); console.log('{"state":'); process.exit(0);
+}
+// FIXTURE_GH_SLOW:the open-PR list hangs, as a slow network does.
 if (process.env.FIXTURE_GH_SLOW && args[0] === 'pr' && args[1] === 'list' && !args.includes('--head')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15000);
 switch (args.slice(0, 2).join(' ')) {
   case 'repo view': out({ defaultBranchRef: { name: 'master' } }); break;
@@ -334,6 +338,15 @@ describe('pr', { concurrency: 4 }, () => {
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.match(result.stdout, /Check failed: HTTP 502: Bad Gateway; trying again in 0\.05s\./);
     assert.equal(f.issue('E1.1').status, 'closed');
+  });
+
+  test('a failed call after an agent ends is logged and its end handled again; the run goes on and merges', async () => {
+    const f = fixture([epic('E1'), task('E1.1', 'E1')]);
+    const result = await f.run({ FIXTURE_GH_GARBLED: '1' });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /Handling the end of review-1 failed: .*; trying again in 0\.05s\.\n(.*\n)*.*PR #1 approved; it merges once its CI passes\./);
+    assert.deepEqual(f.read('merges'), ['1']);
+    assert.equal(result.stdout.match(/Merged PR #1 /g).length, 1, result.stdout); // no check merged it while its reviewer's end waited
   });
 
   test('a task in review whose PR merged unwatched closes; one with no PR gets needs-human', async () => {

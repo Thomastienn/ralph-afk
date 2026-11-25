@@ -349,8 +349,8 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
 - A task labelled `in-review` whose PR is no longer open is checked on GitHub.
   If the PR merged while no reviewer was watching, the task closes as after a
   merge. If the PR was closed or never opened, the task gets `needs-human`.
-- A failed `gh`, `bd` or `git` call during a check is logged and retried at the
-  next check. The run does not stop.
+- A failed `gh`, `bd` or `git` call during a check, or while handling an
+  agent's end, is logged and retried at the next check. The run does not stop.
 - A limited agent is not probed again before its reported reset. The next
   line of the same stage takes over.
 - Ctrl+C: as in sequential mode.
