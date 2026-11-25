@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Unattended Ralph: one task per run, on the first scheduled agent that still has usage.
-# Being the only launcher, it never meets Ralph's lock. See docs/ralph.md.
+# Being the only launcher, it never meets Ralph's lock. See README.md.
 set -euo pipefail
 here="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
 root="$(git rev-parse --show-toplevel)"

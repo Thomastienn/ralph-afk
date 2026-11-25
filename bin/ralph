@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run Ralph headless on one epic of the current checkout. See docs/ralph.md.
+# Run Ralph headless on one epic of the current checkout. See README.md.
 set -euo pipefail
 here="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
 root="$(git rev-parse --show-toplevel)"
