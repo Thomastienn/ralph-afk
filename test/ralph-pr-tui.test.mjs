@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { render, startTui } from '../bin/ralph-pr-tui.mjs';
 
 const now = Date.now();
@@ -25,7 +28,7 @@ test('the overview shows each agent with its last 5 steps, then PRs, log and key
   assert.equal(text[10], ' │ starting');
   assert.equal(text[12], ' PRs  #42 T-2: CI passed, reviewer running');
   assert.deepEqual(text.slice(13, 15), [' Log  14:00:00 one', '      14:00:01 two']);
-  assert.equal(text.at(-1), ' 1-9  open agent   q  stop  ');
+  assert.equal(text.at(-1), ' 1-9  open agent   s  settings   q  stop  ');
   assert.ok(text.every(line => line.length <= 80));
   assert.ok(lines[7].includes('\x1b[0m') && !lines[7].includes('\x1b[2m'), 'the newest step is not dimmed');
   assert.ok(lines[6].includes('\x1b[2mstep 7'), 'older steps are dimmed');
@@ -134,4 +137,42 @@ test('keys that arrive in one chunk each count: q pressed twice while the loop w
   stdin.emit('data', Buffer.from('\x1b[Aq'));
   tui.stop();
   assert.equal(stops, 3);
+});
+
+test('the settings view shows the agent lines, then each setting with its default marked', () => {
+  const text = '# mine\nworker|claude|sonnet|high\nreviewer|codex|gpt|-\nworkers|4\n';
+  const models = screen(view({ settings: { tab: 0, row: 1, col: 1, buffer: null, note: null, text } }), 80, 12);
+  assert.equal(models[1], ' Models  Capacity  Timing ');
+  assert.deepEqual(models.slice(3, 5), ['  worker       claude  sonnet  high ', '  reviewer     codex   gpt     -    ']);
+  assert.equal(models.length, 12);
+  assert.equal(models.at(-1), ' Tab  next tab   ↑↓←→  move   Enter  edit   Esc  back  ');
+  const capacity = screen(view({ settings: { tab: 1, row: 0, col: 0, buffer: '7', note: null, text } }), 80, 12);
+  assert.equal(capacity[3], '  workers      7▌  workers at once');
+  assert.equal(capacity[4], '  reviewers    2   default · reviewers at once');
+  assert.equal(capacity.at(-1), ' Enter  save   Esc  cancel  ');
+  const broken = screen(view({ settings: { tab: 0, row: 0, col: 0, buffer: null, note: null, text: 'workers|none\n' } }), 80, 12);
+  assert.match(broken.at(-2), /^ Agents file line 1: workers must be a whole number from 1; fix it by hand\.$/);
+});
+
+test('s edits the agents file in place: q types, a bad value is not saved, Esc goes back and q stops again', t => {
+  const { stdin, stdout } = process;
+  for (const name of ['setRawMode', 'resume', 'pause']) { stdin[name] = () => stdin; t.after(() => delete stdin[name]); }
+  t.mock.method(stdout, 'write', () => true);
+  for (const [name, size] of [['rows', 24], ['columns', 80]]) { stdout[name] = size; t.after(() => delete stdout[name]); }
+  const file = join(mkdtempSync(join(tmpdir(), 'ralph-settings-')), 'agents');
+  writeFileSync(file, '# mine\nworker|claude|sonnet|high\nreviewer|claude|opus|high\n');
+  let stops = 0, saves = 0;
+  const tui = startTui(() => view(), () => stops++, file, () => saves++);
+  const press = keys => stdin.emit('data', Buffer.from(keys));
+  press('s\x1b[B\x1b[C\r\x7f\x7f\x7f\x7fsq\r'); // reviewer model: opus becomes sq
+  assert.equal(readFileSync(file, 'utf8'), '# mine\nworker|claude|sonnet|high\nreviewer|claude|sq|high\n');
+  press('\t\r\x7f0\r'); // workers|0 is refused
+  assert.equal(readFileSync(file, 'utf8'), '# mine\nworker|claude|sonnet|high\nreviewer|claude|sq|high\n');
+  press('\r\x7f5\r');
+  assert.equal(readFileSync(file, 'utf8'), '# mine\nworker|claude|sonnet|high\nreviewer|claude|sq|high\nworkers|5\n');
+  assert.equal(saves, 2);
+  assert.equal(stops, 0);
+  press('q\x1bq');
+  tui.stop();
+  assert.equal(stops, 1);
 });

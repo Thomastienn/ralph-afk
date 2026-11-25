@@ -85,18 +85,13 @@ agent.
 | --- | --- |
 | `stage` | `worker`: `ralph`, `ralph-afk`, `--pr` workers. `reviewer`: `--pr` reviewers only. `merger`: the `--pr` agent that merges the base into conflicting PRs. |
 | `agent` | `claude` or `codex`. Anything else is refused at start. |
-| `model` | Work model, passed as `--model`. `RALPH_<AGENT>_MODEL` (e.g. `RALPH_CODEX_MODEL`) overrides it for `ralph` and `ralph-afk`. |
+| `model` | Work model, passed as `--model`. |
 | `effort` | Reasoning effort for `--pr` agents; `-` keeps the CLI default. Ignored by `ralph` and `ralph-afk`. |
 
 In `--pr` mode, line order within a stage is the fallback order.
 
-An optional `workers|N` line sets the number of `--pr` workers, a whole
-number from 1. The default is 3. `ralph` and `ralph-afk` without `--pr`
-ignore it, as they ignore `reviewer` and `merger` lines.
-
-An optional `reviewers|N` line sets how many `--pr` reviewers run at once, a
-whole number from 1. The default is 2. Without `merger` lines, the `worker`
-lines do the merger's job.
+`ralph` and `ralph-afk` without `--pr` ignore `reviewer` and `merger` lines.
+Without `merger` lines, the `worker` lines do the merger's job.
 
 A `reviewer|human` line means you review the `--pr` PRs on GitHub yourself;
 see [You as the reviewer](#you-as-the-reviewer). The other `reviewer` lines
@@ -114,11 +109,35 @@ see [You as the worker](#you-as-the-worker). No worker agent runs and
 runs its other `worker` lines. `worker|human` with `reviewer|human` is
 refused, since it leaves `--pr` nothing to do.
 
+### Settings
+
+The agents file also holds the settings, one `name|value` line each. A
+missing setting keeps its default; the first line of a setting wins.
+`agents.example` lists them all with their defaults.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `workers` | `3` | `--pr` workers at once, a whole number from 1. Ignored without `--pr` and with `worker|human`. |
+| `reviewers` | `2` | `--pr` reviewers at once, a whole number from 1. Ignored without `--pr`. |
+| `tries` | `3` | `--pr`: failed agent runs on one task or PR before it gets `needs-human`. |
+| `slow-every` | `5` | `--pr`: merges between runs of `slow-tests.yml`. |
+| `schedule` | `00-24=claude,codex` | Agents allowed per hour; see [Schedule](#schedule). |
+| `wait` | `600` | Whole seconds before re-probing an agent with no known reset. |
+| `poll` | `120` | Seconds between `--pr` checks, above 0. |
+
+A running `--pr` re-reads the file at every check and right after a save in
+the dashboard. A change applies to the next agent it starts; running agents
+keep their model, effort and slot. A lower `workers` or `reviewers` count
+stops nothing: no new one starts until the count is below it. A file with a
+bad line is not applied; the run logs why and keeps its settings.
+`worker|human`, `reviewer|human` and `reviewer|none` apply only at the next
+start. `ralph-afk` without `--pr` reads the file once, at start.
+
 ### Which agents file is used
 
 The first match wins. It is the same for `ralph`, `ralph-afk` and `--pr`:
 
-1. `RALPH_AGENTS`, if set. A relative path is resolved from the checkout root.
+1. `RALPH_AGENTS`, an environment variable, if set. A relative path is resolved from the checkout root.
 2. `.ralph-tui/agents` in the checkout root, if it exists.
 3. `agents` in this repository, next to `bin/`.
 
@@ -161,7 +180,6 @@ Start once, in tmux or with `nohup`:
 ```bash
 ralph-afk                          # every ready epic, oldest first
 ralph-afk my-epic other-epic       # only these, in this order
-RALPH_AFK_SCHEDULE='00-07=codex 07-24=claude,codex' ralph-afk
 ```
 
 Each cycle:
@@ -199,19 +217,21 @@ iterations run out. `ralph-afk` probes instead:
 - No agent answers: it sleeps until the earliest time one may be back, then
   probes all of them again.
 - A limited agent counts as back 1 minute after its reported reset. Other
-  failures (auth, network) count as back after `RALPH_AFK_WAIT` seconds.
+  failures (auth, network) count as back after `wait` seconds.
 - With several schedule windows, it also wakes on the hour, in case a new
   window brings a usable agent.
 - A run that ends within 2 minutes without closing or blocking a task waits
-  `RALPH_AFK_WAIT` seconds before the next try. This covers an instant limit,
+  `wait` seconds before the next try. This covers an instant limit,
   a startup failure or a crash.
 - A running task is never probed. If it hits a limit, the run ends and the
   next agent resumes the task and its edits through `beads-resume`.
 
 ### Schedule
 
-`RALPH_AFK_SCHEDULE` is a space-separated list of `FROM-TO=agents` windows in
-local hours, agents tried in order. The default is `00-24=claude,codex`.
+The `schedule` setting is a space-separated list of `FROM-TO=agents` windows
+in local hours, agents tried in order. The default is `00-24=claude,codex`.
+For example, `schedule|00-07=codex 07-24=claude,codex` runs only Codex at
+night.
 
 - No agent runs outside every window.
 - Split windows that cross midnight: `22-24=codex 00-06=codex`.
@@ -243,7 +263,7 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
   both sides' task descriptions (`prompts/pr-merger.md`), runs the tests for
   the conflicted code, pushes and ends. The PR merges once its CI passes.
 - An approved PR whose CI goes red (after a reviewer's fix or the merger's
-  merge) loses `approved` and goes back to a reviewer. After 3 times the task
+  merge) loses `approved` and goes back to a reviewer. After `tries` times (default 3) the task
   gets `needs-human`.
 
 - At start, the local default branch is pushed to `origin` so workers branch
@@ -252,7 +272,7 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
   run. Commits you make on it later are pushed before the next worker
   branches.
 - Out of work, it keeps running and checks for new tasks every
-  `RALPH_PR_POLL` seconds, so tasks filed later start without a restart. Only
+  `poll` seconds, so tasks filed later start without a restart. Only
   Ctrl+C stops it.
 - Worktrees: `../<repo>-pr/`. Agent logs: `.ralph-tui/pr-logs/`.
 - Agent steps come in live; failed tool calls show as `error:`. `claude -p`
@@ -275,12 +295,20 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
     stopping. `NO_COLOR` turns colour off.
   - `1`-`9` opens that agent full screen with all its steps; `↑`/`↓`
     scroll, `Esc` goes back.
+  - `s` opens the settings: tabs Models (the agent lines' agent, model and
+    effort), Capacity (`workers`, `reviewers`, `tries`, `slow-every`) and
+    Timing (`schedule`, `wait`, `poll`). `Tab` switches tab, the arrows move,
+    `Enter` edits and `Enter` again saves; `Esc` cancels or goes back. A save
+    rewrites only that line of the agents file, so comments and order stay,
+    and applies as in [Settings](#settings). A bad value is not saved. Lines
+    are not added, removed or reordered here: do that in an editor. `q` does
+    not stop the run while the settings are open.
   - `q` or Ctrl+C stops, the same as Ctrl+C below.
   - The supervisor log also goes to `.ralph-tui/pr-logs/ralph-pr.log`, since
     the dashboard closes when the run ends.
 - Not in a terminal (stdout or stdin redirected, e.g. `nohup` or `> file`),
   it prints a plain log instead. Each step is one line, prefixed with its task
-  or `review-<PR>`. While busy, a status block prints every `RALPH_PR_POLL`
+  or `review-<PR>`. While busy, a status block prints every `poll`
   seconds: each running agent with its model, effort, context size,
   minutes so far and last step,
   then each open PR with its labels, CI state and the agent on it.
@@ -294,7 +322,7 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
   and branch deletes run without Git hooks. Beads' hooks take about 15 s each and only
   re-import the export, so with them the next review started up to a minute
   after a merge. Agents' own commits and pushes still run every hook.
-- Every 5 merges, `slow-tests.yml` is dispatched. A failure files a fix task.
+- Every `slow-every` merges (default 5), `slow-tests.yml` is dispatched. A failure files a fix task.
 - Every agent prompt ends with a catch-up rule: when the PR
   conflicts with the base, merge `origin/<base>` and push before waiting on CI.
   GitHub runs no CI on a conflicting PR, so without it the agent waits forever.
@@ -308,7 +336,7 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
   `needs-human`, not a reviewer. To hand it back to a worker, remove both
   labels. Once a reviewer has started a PR, red CI goes back to a reviewer,
   up to 3 runs, also after a restart (`.ralph-tui/pr-logs/reviewed.json`).
-- A task or PR whose agent fails 3 times gets `needs-human`. Other work
+- A task or PR whose agent fails `tries` times (default 3) gets `needs-human`. Other work
   continues. These items are listed when it runs out of work and at the end.
   Failure counts survive a restart (`.ralph-tui/pr-logs/tries.json`) and reset
   when the task gets `needs-human`.
@@ -404,7 +432,7 @@ reviewer prompt is not used:
    the PR merges.
 
 - A merge that fails for another reason (e.g. branch protection) counts as a
-  failed run; after 3 the task gets `needs-human`.
+  failed run; after `tries` (default 3) the task gets `needs-human`.
 - A green PR is merged even when it is behind the base. Two PRs that pass CI
   alone can still break the base together; the slow suite every 5 merges is
   the only check after the merge.
@@ -415,10 +443,10 @@ reviewer prompt is not used:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `RALPH_AGENTS` | see [lookup](#which-agents-file-is-used) | Agents file path. |
-| `RALPH_AFK_SCHEDULE` | `00-24=claude,codex` | Agents allowed per hour. |
-| `RALPH_AFK_WAIT` | `600` | Seconds before re-probing an agent with no known reset. |
-| `RALPH_<AGENT>_MODEL` | from agents file | Work model override for `ralph` and `ralph-afk`. |
-| `RALPH_PR_POLL` | `120` | Seconds between `--pr` checks. |
+
+The other settings live in the agents file; see [Settings](#settings).
+`RALPH_AFK_SCHEDULE`, `RALPH_AFK_WAIT`, `RALPH_PR_POLL` and
+`RALPH_<AGENT>_MODEL` are no longer read.
 
 ## Workflow
 

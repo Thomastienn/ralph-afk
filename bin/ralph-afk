@@ -44,10 +44,15 @@ flock -n 9 || { echo 'ralph-afk is already running in this checkout.' >&2; exit 
 [[ -f .ralph-tui/agents ]] && agents=.ralph-tui/agents || agents="$here/../agents"
 agents="${RALPH_AGENTS:-$agents}"
 [[ -f "$agents" ]] || { echo "Missing $agents: cp $(readlink -f -- "$here/../agents.example") $agents, then edit it." >&2; exit 1; }
-# Every line is worker, reviewer or merger, for claude or codex: the agents with a built-in probe; or workers|N, reviewers|N, worker|human, reviewer|human or reviewer|none.
-# This also catches the retired ralph stage and the old probe column.
-bad="$(awk -F'|' '!/^[[:space:]]*(#|$)/ && !($1 ~ /^(workers|reviewers)$/ && NF == 2 && $2 ~ /^[1-9][0-9]*$/) && !($0 == "worker|human" || $0 == "reviewer|human" || $0 == "reviewer|none") && ($1 !~ /^(worker|reviewer|merger)$/ || $2 !~ /^(claude|codex)$/ || NF != 4) { print NR; exit }' "$agents")"
-[[ -z "$bad" ]] || { echo "$agents line $bad: expected stage|agent|model|effort, stage worker, reviewer or merger, agent claude or codex, or workers|N, reviewers|N, worker|human, reviewer|human or reviewer|none (see agents.example)." >&2; exit 1; }
+# Every line is worker, reviewer or merger, for claude or codex: the agents with a built-in probe; or worker|human,
+# reviewer|human, reviewer|none or a setting. This also catches the retired ralph stage and the old probe column.
+# bin/ralph-agents.mjs checks the same lines for ralph-pr.mjs and the dashboard: keep the two in sync.
+bad="$(awk -F'|' '!/^[[:space:]]*(#|$)/ && !($1 ~ /^(workers|reviewers|tries|slow-every)$/ && NF == 2 && $2 ~ /^[1-9][0-9]*$/) &&
+  !($1 == "wait" && NF == 2 && $2 ~ /^[0-9]+$/) && !($1 == "poll" && NF == 2 && $2 ~ /^[0-9]*\.?[0-9]+$/ && $2 + 0 > 0) &&
+  !($1 == "schedule" && NF == 2 && $2 ~ /^[0-9]+-[0-9]+=[a-z,]+( +[0-9]+-[0-9]+=[a-z,]+)*$/) &&
+  !($0 == "worker|human" || $0 == "reviewer|human" || $0 == "reviewer|none") &&
+  ($1 !~ /^(worker|reviewer|merger)$/ || $2 !~ /^(claude|codex)$/ || NF != 4 || $3 == "" || $4 == "") { print NR; exit }' "$agents")"
+[[ -z "$bad" ]] || { echo "$agents line $bad: expected stage|agent|model|effort (stage worker, reviewer or merger; agent claude or codex), worker|human, reviewer|human, reviewer|none or a setting such as workers|3 (see agents.example)." >&2; exit 1; }
 usage='Usage: ralph-afk [epic...] | ralph-afk --pr | ralph-afk --init'
 # The agents file is the only list of agents: comment a line out to stop using that agent.
 mapfile -t known < <(awk -F'|' '$1 == "worker" { print $2 }' "$agents")
@@ -88,12 +93,14 @@ load_epics() {
   epics=("${given[@]}")
   (( ${#epics[@]} )) || mapfile -t epics < <(bd ready --type epic --sort oldest --json --limit 0 | jq -r '.[].id')
 }
-# Space-separated FROM-TO=agents windows in local hours; agents are tried in order.
+# A setting's first line in the agents file, else its default (the same as in bin/ralph-agents.mjs).
+setting() { awk -F'|' -v key="$1" '$1 == key { print $2; found = 1; exit } END { if (!found) print def }' def="$2" "$agents"; }
+# schedule: space-separated FROM-TO=agents windows in local hours; agents are tried in order.
 # An hour outside every window runs nothing.
-schedule="${RALPH_AFK_SCHEDULE:-00-24=claude,codex}"
-wait_s="${RALPH_AFK_WAIT:-600}"
+schedule="$(setting schedule 00-24=claude,codex)"
+wait_s="$(setting wait 600)"
 for agent in $(sed 's/[^ ]*=//g; s/,/ /g' <<< "$schedule"); do
-  [[ "$agent" == claude || "$agent" == codex ]] || { echo "Unknown agent in RALPH_AFK_SCHEDULE: $agent (claude or codex)" >&2; exit 1; }
+  [[ "$agent" == claude || "$agent" == codex ]] || { echo "Unknown agent in the agents file's schedule: $agent (claude or codex)" >&2; exit 1; }
 done
 # --pr: workers|N workers open one PR per task, reviewers|N reviewers approve them and ralph-pr.mjs merges them. The lock stays held.
 if "$pr"; then exec node "$here/ralph-pr.mjs"; fi
@@ -115,7 +122,7 @@ agents_now() {
 
 # Ask the real CLI with a cheap model (ralph-probe.mjs). A limited agent says when it resets;
 # resets[agent] keeps that (epoch seconds). One that does not say gets an empty entry,
-# so it is checked again after RALPH_AFK_WAIT.
+# so it is checked again after the wait setting.
 declare -A resets=()
 usable() {
   local at

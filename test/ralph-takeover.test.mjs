@@ -23,7 +23,7 @@ function fixture(t) {
   // The scripts work on the Git checkout they are called from.
   execFileSync('git', ['init', '-q', cwd]);
   for (const dir of ['.ralph-tui', 'bin', '.config/ralph-tui/plugins/trackers']) mkdirSync(join(cwd, dir), { recursive: true });
-  const env = { ...process.env, HOME: cwd, PATH: `${cwd}/bin:${process.env.PATH}`, BEADS_ACTOR: 'fixture', RALPH_CODEX_MODEL: 'fixture-model', RALPH_AGENTS: fileURLToPath(new URL('../agents.example', import.meta.url)) };
+  const env = { ...process.env, HOME: cwd, PATH: `${cwd}/bin:${process.env.PATH}`, BEADS_ACTOR: 'fixture', RALPH_AGENTS: fileURLToPath(new URL('../agents.example', import.meta.url)) };
   writeFileSync(join(cwd, '.config/ralph-tui/plugins/trackers/beads-resume.js'), '');
   writeFileSync(join(cwd, 'issue.json'), JSON.stringify({ id: 'task-1', status: 'in_progress', assignee: 'fixture' }));
   writeFileSync(join(cwd, 'bin/bd'), `#!${process.execPath}
@@ -96,11 +96,11 @@ test('scheduled takeover stops the old Ralph and orphan agent before launching C
   assert.ok(existsSync(join(f.cwd, '.ralph-tui/reports', archive, 'session.json')));
 });
 
-test('a named agent gets its model: RALPH_<NAME>_MODEL, else the agents table, unless --model is given', async t => {
+test('a named agent gets its model from the agents table, unless --model is given', async t => {
   const f = fixture(t);
   const result = await f.run('ralph', '--takeover', '--agent', 'codex', '--iterations', '3');
   assert.equal(result.code, 0, result.output);
-  assert.deepEqual(f.started().args, ['run', '--headless', '--epic', 'TreeTutor-7t3', '--agent', 'codex', '--iterations', '3', '--model', 'fixture-model']);
+  assert.deepEqual(f.started().args, ['run', '--headless', '--epic', 'TreeTutor-7t3', '--agent', 'codex', '--iterations', '3', '--model', 'gpt-6.2-sol']);
   await f.run('ralph', '--agent', 'claude');
   assert.deepEqual(f.started().args.slice(-2), ['--model', 'sonnet']);
   await f.run('ralph', '--agent', 'codex', '--model', 'mine');

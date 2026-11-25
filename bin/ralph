@@ -34,12 +34,10 @@ for arg in "$@"; do
 done
 # A project's configured model belongs to its default agent, so a named agent gets its own.
 if [[ -n "$agent" ]] && ! "$model_given"; then
-  var="RALPH_${agent^^}_MODEL"
-  var="${var//-/_}"
   [[ -f .ralph-tui/agents ]] && agents=.ralph-tui/agents || agents="$here/../agents"
   agents="${RALPH_AGENTS:-$agents}"
-  [[ -n "${!var:-}" || -f "$agents" ]] || { echo "Missing $agents: cp $(readlink -f -- "$here/../agents.example") $agents, then edit it." >&2; exit 1; }
-  model="${!var:-$(awk -F'|' -v agent="$agent" '$1 == "worker" && $2 == agent { print $3; exit }' "$agents")}"
+  [[ -f "$agents" ]] || { echo "Missing $agents: cp $(readlink -f -- "$here/../agents.example") $agents, then edit it." >&2; exit 1; }
+  model="$(awk -F'|' -v agent="$agent" '$1 == "worker" && $2 == agent { print $3; exit }' "$agents")"
   [[ -z "$model" ]] || args+=(--model "$model")
 fi
 if "$takeover" && [[ " ${args[*]} " != *" --help "* && " ${args[*]} " != *" -h "* ]]; then

@@ -10,18 +10,14 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { promisify } from 'node:util';
+import { parseAgents } from './ralph-agents.mjs';
 import { probe } from './ralph-probe.mjs';
 import { agentLabel, startTui } from './ralph-pr-tui.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = process.cwd();
 const { env } = process;
-const schedule = env.RALPH_AFK_SCHEDULE ?? '00-24=claude,codex';
-const waitMs = Number(env.RALPH_AFK_WAIT ?? 600) * 1000;
-const pollMs = Number(env.RALPH_PR_POLL ?? 120) * 1000;
-const SLOW_EVERY = 5; // merges between slow-suite runs on GitHub
 const SLOW_FIX = 'Fix test:slow failures'; // the task a failed slow run files
-const TRIES = 3; // failed agent runs on one task or PR before it needs a human
 const trees = join(dirname(root), `${basename(root)}-pr`); // outside the checkout, so nothing lands in .gitignore
 const logs = join(root, '.ralph-tui/pr-logs');
 const agentsFile = env.RALPH_AGENTS || (existsSync('.ralph-tui/agents') ? '.ralph-tui/agents' : join(here, '../agents')); // ralph-afk checked it exists
@@ -53,17 +49,38 @@ const labelled = (issue, ...names) => (issue.labels ?? []).some(label => names.i
 const noHooks = ['-c', 'core.hooksPath=/dev/null'];
 const show = async id => { const out = await attempt('bd', ['show', id, '--json']); return out && JSON.parse(out)[0]; };
 
-// Workers share the worker lines with ralph-afk.
-const table = readFileSync(agentsFile, 'utf8').split('\n')
-  .filter(line => line.trim() && !line.trimStart().startsWith('#'))
-  .map(line => { const [stage, agent, model, effort] = line.split('|'); return { stage, agent, model, effort: effort && effort !== '-' ? effort : null }; });
-for (const stage of ['worker', 'reviewer']) {
-  if (!table.some(row => row.stage === stage)) fail(`No ${stage} line in ${agentsFile}.`);
+// Workers share the worker lines with ralph-afk. The settings come from the agents file too, and a change to it
+// applies to the next agent started: running agents keep theirs.
+let table, slots, reviewerSlots, mergerStage, schedule, waitMs, pollMs, maxTries, slowEvery;
+function load() {
+  const { rows, settings } = parseAgents(readFileSync(agentsFile, 'utf8'));
+  for (const stage of ['worker', 'reviewer']) {
+    if (!rows.some(row => row.stage === stage)) throw new Error(`No ${stage} line in ${agentsFile}.`);
+  }
+  table = rows;
+  slots = Number(settings.workers);
+  reviewerSlots = Number(settings.reviewers);
+  // Without merger lines, the worker lines merge the base into conflicting PRs.
+  mergerStage = table.some(row => row.stage === 'merger') ? 'merger' : 'worker';
+  schedule = settings.schedule;
+  waitMs = Number(settings.wait) * 1000;
+  pollMs = Number(settings.poll) * 1000;
+  maxTries = Number(settings.tries); // failed agent runs on one task or PR before it needs a human
+  slowEvery = Number(settings['slow-every']); // merges between slow-suite runs on GitHub
 }
-const slots = Number(table.find(row => row.stage === 'workers')?.agent ?? 3); // ralph-afk checked workers|N
-const reviewerSlots = Number(table.find(row => row.stage === 'reviewers')?.agent ?? 2); // and reviewers|N
-// Without merger lines, the worker lines merge the base into conflicting PRs.
-const mergerStage = table.some(row => row.stage === 'merger') ? 'merger' : 'worker';
+try { load(); } catch (error) { fail(error.message.startsWith('line ') ? `${agentsFile} ${error.message}.` : error.message); }
+let loaded = statSync(agentsFile).mtimeMs;
+// The mode lines change who does the work, so they apply only at the next start.
+const modes = () => table.filter(row => !row.model).map(row => `${row.stage}|${row.agent}`).sort().join(' ');
+const startModes = modes();
+function reload() {
+  const mtime = statSync(agentsFile, { throwIfNoEntry: false })?.mtimeMs;
+  if (!mtime || mtime === loaded) return;
+  loaded = mtime;
+  try { load(); } catch (error) { return log(`Not applying ${agentsFile}: ${error.message}`); }
+  log(`Applied ${agentsFile}: up to ${slots} workers and ${reviewerSlots} reviewers; running agents keep their settings.`);
+  if (modes() !== startModes) log('worker|human, reviewer|human and reviewer|none apply at the next start of ralph-afk --pr.');
+}
 // reviewer|human: the owner reviews and merges on GitHub; the other reviewer lines are ignored.
 const human = table.some(row => row.stage === 'reviewer' && row.agent === 'human');
 // worker|human: the owner writes the code on a branch named after the task; no worker agent runs.
@@ -89,7 +106,7 @@ async function usable(row) {
   const known = probed.get(row.agent);
   if (known && known.until > Date.now()) return known.ok;
   const { ok, until } = await probe(row.agent);
-  // A limited agent is not probed before its reported reset; with none, it waits RALPH_AFK_WAIT.
+  // A limited agent is not probed before its reported reset; with none, it waits wait seconds.
   probed.set(row.agent, { ok, until: until || Date.now() + waitMs });
   if (!ok) log(`${row.agent} is not usable now (usage limit, auth or network).`);
   return ok;
@@ -206,7 +223,7 @@ function codexContext(job) {
 }
 setInterval(() => { for (const job of running) { progress(job); codexContext(job); } screen?.draw(); }, 2000).unref();
 
-// Kept on disk, so a restart does not give a failing task TRIES more runs.
+// Kept on disk, so a restart does not give a failing task maxTries more runs.
 const triesFile = join(logs, 'tries.json');
 const tries = new Map(Object.entries(existsSync(triesFile) ? JSON.parse(readFileSync(triesFile, 'utf8')) : {}));
 const saveTries = () => writeFileSync(triesFile, JSON.stringify(Object.fromEntries(tries)));
@@ -218,16 +235,16 @@ const saveSessions = () => writeFileSync(sessionsFile, JSON.stringify(sessions))
 // A task or PR that keeps failing waits for the owner instead of spinning.
 async function failed(id, what) {
   const n = (tries.get(id) ?? 0) + 1;
-  // Label before the count resets: a hard stop in between must not hand the task TRIES fresh runs.
-  if (n >= TRIES) {
+  // Label before the count resets: a hard stop in between must not hand the task maxTries fresh runs.
+  if (n >= maxTries) {
     await attempt('bd', ['update', id, '--add-label', 'needs-human']);
     await attempt('bd', ['note', id, `ralph-afk --pr: ${what} failed ${n} times; see .ralph-tui/pr-logs/.`]);
   }
-  if (n < TRIES) tries.set(id, n);
-  else tries.delete(id); // the owner removing needs-human gives it TRIES fresh runs
+  if (n < maxTries) tries.set(id, n);
+  else tries.delete(id); // the owner removing needs-human gives it maxTries fresh runs
   saveTries();
-  if (n >= TRIES) log(`${id} failed ${n} times; labelled needs-human.`);
-  return n >= TRIES;
+  if (n >= maxTries) log(`${id} failed ${n} times; labelled needs-human.`);
+  return n >= maxTries;
 }
 
 const base = (await json('gh', ['repo', 'view', '--json', 'defaultBranchRef'])).defaultBranchRef.name;
@@ -375,7 +392,7 @@ const settled = pr => pr.statusCheckRollup?.length &&
   pr.statusCheckRollup.every(check => (check.status ?? 'COMPLETED') === 'COMPLETED' && !['PENDING', 'EXPECTED'].includes(check.state));
 // Check runs report a conclusion, commit statuses a state.
 const passed = pr => pr.statusCheckRollup.every(check => ['SUCCESS', 'NEUTRAL', 'SKIPPED'].includes(check.conclusion ?? check.state));
-// PRs a reviewer has started; their red CI is the reviewer's to fix, up to TRIES runs. Kept on disk: a reviewer
+// PRs a reviewer has started; their red CI is the reviewer's to fix, up to maxTries runs. Kept on disk: a reviewer
 // stopped mid-fix leaves red CI that is still its own after a restart.
 const reviewedFile = join(logs, 'reviewed.json');
 const reviewed = new Set(existsSync(reviewedFile) ? JSON.parse(readFileSync(reviewedFile, 'utf8')) : []);
@@ -424,7 +441,7 @@ async function blocking() {
 // The supervisor merges approved PRs (with reviewer|none, every PR in review) and starts reviews for the rest.
 async function advance(waiting) {
   const approved = pr => labelled(pr.task, noReview ? 'in-review' : 'approved');
-  // A reviewer's fix or the merger's merge turned CI red: a reviewer fixes it, up to TRIES times.
+  // A reviewer's fix or the merger's merge turned CI red: a reviewer fixes it, up to maxTries times.
   for (const pr of noReview ? [] : waiting.filter(pr => approved(pr) && settled(pr) && !passed(pr))) {
     if (await attempt('bd', ['update', pr.task.id, '--remove-label', 'approved']) === null) continue;
     pr.task.labels = pr.task.labels.filter(label => label !== 'approved');
@@ -489,7 +506,7 @@ async function merged(id, number) {
   if (reviewed.delete(Number(number))) saveReviewed();
   log(`Merged PR #${number} (${id}).`);
   await pull();
-  if (++merges % SLOW_EVERY === 0) await dispatchSlow();
+  if (++merges % slowEvery === 0) await dispatchSlow();
 }
 // A task in review whose PR left the open list: merged while no reviewer was watching (a crash or a failed
 // gh call), closed by hand, or never opened. A merged one is finished here; the rest wait for the owner.
@@ -603,16 +620,18 @@ function dashboard() {
 let idle = false;
 let shown = 0; // when the last status block printed
 let latest = { prs: [], waiting: 0 }; // the last check, for the dashboard
-if (process.stdin.isTTY && process.stdout.isTTY) screen = startTui(dashboard, interrupt);
+let wake = () => {}; // a save in the settings view ends the wait, so a new worker count applies at once
+if (process.stdin.isTTY && process.stdout.isTTY) screen = startTui(dashboard, interrupt, agentsFile, () => { reload(); wake(); });
 log(`PR mode on ${base}: ${humanWorker ? 'you write the code' : `up to ${slots} workers`}, ${human ? 'you review on GitHub' : noReview ? 'no reviewer, green PRs merge at once' : `up to ${reviewerSlots} reviewers`}.`);
 // One pass over the queue; true once a requested stop has nothing left running.
 async function poll() {
+  reload();
   const closed = JSON.parse(await attempt('bd', ['epic', 'close-eligible', '--json']) ?? '{}').closed ?? [];
   if (closed.length) log(`Closed finished epics: ${closed.join(' ')}`);
   await checkSlow();
   const workers = [...running].filter(job => job.stage === 'worker');
   const ready = stopping ? [] : (await readyTasks()).filter(task => !workers.some(job => job.Task === task.id));
-  for (const task of humanWorker ? [] : ready.slice(0, slots - workers.length)) {
+  for (const task of humanWorker ? [] : ready.slice(0, Math.max(0, slots - workers.length))) { // the count may have dropped
     const row = await pick('worker');
     if (stopping) break; // q pressed while the probe ran
     if (!row) { log('No worker agent available now.'); break; }
@@ -666,7 +685,7 @@ for (;;) {
   }
   if (stopping && !running.size) break; // also when the stop came during the check
   // Once stopping, halt stays aborted and its sleep returns at once: wait for the agents only, or this spins on gh and bd.
-  await Promise.race([...(stopping ? [] : [sleep(pollMs, null, { signal: halt.signal }).catch(() => {})]), ...[...running].map(job => job.done)]);
+  await Promise.race([...(stopping ? [] : [sleep(pollMs, null, { signal: halt.signal }).catch(() => {}), new Promise(resolve => { wake = resolve; })]), ...[...running].map(job => job.done)]);
   for (const job of running) {
     if (job.code === undefined) continue;
     running.delete(job);

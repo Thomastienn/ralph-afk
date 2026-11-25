@@ -55,14 +55,16 @@ if [[ $(cat "${cwd}/limited-agent" 2>/dev/null) == '${name}' || ( " $FIXTURE_LIM
   const read = name => existsSync(join(cwd, name)) ? readFileSync(join(cwd, name), 'utf8').trim().split('\n') : [];
   const script = fileURLToPath(new URL('../bin/ralph-afk', import.meta.url));
   const options = env => ({ cwd, env: { ...process.env, HOME: cwd, PATH: `${cwd}/bin:${process.env.PATH}`, BEADS_ACTOR: 'fixture', RALPH_AGENTS: fileURLToPath(new URL('../agents.example', import.meta.url)), ...env } });
+  // agents.example with settings lines first, so they win.
+  const table = settings => { const file = join(cwd, 'agents-set'); writeFileSync(file, `${settings}\n${readFileSync(new URL('../agents.example', import.meta.url), 'utf8')}`); return file; };
   const run = (env = {}, args = []) => spawnSync('bash', [script, ...args], { ...options(env), encoding: 'utf8', timeout: 20000 });
   const start = (env = {}) => spawn('bash', [script], options(env));
-  return { run, start, read, bin, cwd, runs: () => read('runs'), sleeps: () => read('sleeps') };
+  return { run, start, read, bin, cwd, table, runs: () => read('runs'), sleeps: () => read('sleeps') };
 }
 
 test('a limited Claude hands the task to Codex, which keeps the next task after Claude resets', () => {
   const f = fixture({ 'TreeTutor-7t3': 2 });
-  const result = f.run({ FIXTURE_LIMITED: 'claude', RALPH_AFK_WAIT: '7' });
+  const result = f.run({ FIXTURE_LIMITED: 'claude', RALPH_AGENTS: f.table('wait|7') });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   // One task per run, and no switch back to Claude while Codex still answers.
   const codex = 'run --headless --epic TreeTutor-7t3 --iterations 1 --agent codex --model gpt-6.2-sol';
@@ -72,7 +74,7 @@ test('a limited Claude hands the task to Codex, which keeps the next task after 
 
 test('with every agent limited it waits, then starts once usage is back', () => {
   const f = fixture();
-  const result = f.run({ FIXTURE_LIMITED: 'claude codex', RALPH_AFK_WAIT: '7' });
+  const result = f.run({ FIXTURE_LIMITED: 'claude codex', RALPH_AGENTS: f.table('wait|7') });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(f.sleeps()[0], '7');
   assert.equal(f.runs().length, 1);
@@ -99,14 +101,14 @@ test('with every agent limited it sleeps until the first reset the probes report
 });
 
 test('the schedule picks the agent for the hour and runs nothing outside its windows', () => {
-  const schedule = { RALPH_AFK_SCHEDULE: '00-06=codex 08-24=claude,codex' };
+  const schedule = 'schedule|00-06=codex 08-24=claude,codex';
   const night = fixture();
-  assert.equal(night.run({ ...schedule, FIXTURE_HOUR: '03' }).status, 0);
+  assert.equal(night.run({ RALPH_AGENTS: night.table(schedule), FIXTURE_HOUR: '03' }).status, 0);
   assert.match(night.runs()[0], /--agent codex/);
 
   // 07:00 has no window: it must wait rather than launch.
   const gap = fixture();
-  assert.equal(gap.run({ ...schedule, FIXTURE_HOUR: '07', FIXTURE_WAIT_ENDS_WORK: '1' }).status, 0);
+  assert.equal(gap.run({ RALPH_AGENTS: gap.table(schedule), FIXTURE_HOUR: '07', FIXTURE_WAIT_ENDS_WORK: '1' }).status, 0);
   assert.deepEqual(gap.runs(), []);
   assert.equal(gap.sleeps().length, 1);
 });
@@ -121,16 +123,16 @@ test('a scheduled agent with no worker line never launches; a schedule typo is r
   assert.ok(!f.read('probes').includes('claude'));
 
   const unknown = fixture();
-  const refused = unknown.run({ RALPH_AFK_SCHEDULE: '00-24=claude,nobody' });
+  const refused = unknown.run({ RALPH_AGENTS: unknown.table('schedule|00-24=claude,nobody') });
   assert.equal(refused.status, 1);
-  assert.match(refused.stderr, /Unknown agent in RALPH_AFK_SCHEDULE: nobody/);
+  assert.match(refused.stderr, /Unknown agent in the agents file's schedule: nobody/);
   assert.deepEqual(unknown.runs(), []);
 });
 
 test("a checkout's own .ralph-tui/agents overrides the shared agents file", () => {
   const f = fixture({ 'TreeTutor-7t3': 1 });
-  writeFileSync(join(f.cwd, '.ralph-tui/agents'), 'worker|codex|repo-model|-\n');
-  const result = f.run({ RALPH_AGENTS: '', RALPH_AFK_SCHEDULE: '00-24=codex' });
+  writeFileSync(join(f.cwd, '.ralph-tui/agents'), 'schedule|00-24=codex\nworker|codex|repo-model|-\n');
+  const result = f.run({ RALPH_AGENTS: '' });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(f.runs(), ['run --headless --epic TreeTutor-7t3 --iterations 1 --agent codex --model repo-model']);
 });
@@ -139,7 +141,7 @@ test('an agents line with another stage, agent or field count is refused at star
   const f = fixture();
   const old = join(f.cwd, 'old-agents');
   // The retired ralph stage, an agent with no built-in probe, and the retired probe column.
-  for (const line of ['ralph|claude|opus|-', 'worker|cursor|auto|-', 'worker|claude|opus|-|echo pong', 'workers|0', 'workers|two', 'reviewers|0', 'merger|human', 'reviewer|human|-|-', 'worker|human|-|-']) {
+  for (const line of ['ralph|claude|opus|-', 'worker|cursor|auto|-', 'worker|claude|opus|-|echo pong', 'workers|0', 'workers|two', 'reviewers|0', 'merger|human', 'reviewer|human|-|-', 'worker|human|-|-', 'worker|codex||-', 'poll|0', 'wait|1.5', 'tries|0', 'schedule|always', 'retries|3']) {
     writeFileSync(old, `# comment\n\nworker|codex|m|-\n${line}\n`);
     const result = f.run({ RALPH_AGENTS: old });
     assert.equal(result.status, 1, line);
@@ -156,8 +158,8 @@ test('the retired -a option is refused; sequential mode ignores workers|N, revie
   assert.deepEqual(f.runs(), []);
 
   const table = join(f.cwd, 'counted');
-  writeFileSync(table, 'workers|5\nreviewers|3\nworker|human\nworker|codex|gpt-6.2-sol|-\nreviewer|human\nmerger|codex|m|-\n');
-  const result = f.run({ RALPH_AGENTS: table, RALPH_AFK_SCHEDULE: '00-24=codex' });
+  writeFileSync(table, 'schedule|00-24=codex\nworkers|5\nreviewers|3\nworker|human\nworker|codex|gpt-6.2-sol|-\nreviewer|human\nmerger|codex|m|-\n');
+  const result = f.run({ RALPH_AGENTS: table });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(f.runs(), ['run --headless --epic TreeTutor-sh8 --iterations 1 --agent codex --model gpt-6.2-sol']);
 });

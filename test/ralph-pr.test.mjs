@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+const example = readFileSync(new URL('../agents.example', import.meta.url), 'utf8');
+
 // Real Git with a bare origin; fake bd, gh and agents (no model calls). Agents finish their job at once:
 // a worker commits, pushes, opens a PR and labels the task in-review; a reviewer labels it approved; the merger
 // marks a conflicting PR mergeable. The supervisor merges approved PRs.
@@ -166,8 +168,15 @@ function fixture(issues) {
   bin('codex', agent('codex'));
   const read = name => existsSync(join(fix, name)) ? readFileSync(join(fix, name), 'utf8').trim().split('\n') : [];
   const script = fileURLToPath(new URL('../bin/ralph-afk', import.meta.url));
+  // An agents file with fast checks and no wait; a setting in text comes first, so it wins.
+  let tables = 0;
+  const table = (text = example) => {
+    const file = join(base, `agents-${++tables}`);
+    writeFileSync(file, `${text}\npoll|0.05\nwait|0\n`);
+    return file;
+  };
   const options = env => ({
-    cwd, env: { ...process.env, ...identity, FIX: fix, PATH: `${fix}/bin:${process.env.PATH}`, RALPH_PR_POLL: '0.05', RALPH_AFK_WAIT: '0', CLAUDE_CONFIG_DIR: join(fix, 'claude'), CODEX_HOME: join(fix, 'codex'), RALPH_AGENTS: fileURLToPath(new URL('../agents.example', import.meta.url)), ...env },
+    cwd, env: { ...process.env, ...identity, FIX: fix, PATH: `${fix}/bin:${process.env.PATH}`, CLAUDE_CONFIG_DIR: join(fix, 'claude'), CODEX_HOME: join(fix, 'codex'), RALPH_AGENTS: table(), ...env },
   });
   // --pr runs until Ctrl+C: send it once stop(stdout so far) holds, by default when it reports being out of work.
   const run = (env = {}, args = [], stop = out => /Out of work/.test(out), signal = 'SIGINT') => new Promise(resolve => {
@@ -183,13 +192,12 @@ function fixture(issues) {
   });
   const issue = id => JSON.parse(readFileSync(join(fix, 'issues.json'), 'utf8')).find(i => i.id === id);
   const start = env => spawn('bash', [script, '--pr'], options(env));
-  return { base, cwd, fix, git, run, start, read, issue, claims: () => read('bd-calls').filter(call => call.endsWith('--claim')) };
+  return { base, cwd, fix, git, run, start, read, issue, table, claims: () => read('bd-calls').filter(call => call.endsWith('--claim')) };
 }
 
 test('workers open one PR per task, oldest epic first; up to 2 reviewers approve them; merged PRs are cleaned up', async () => {
   const f = fixture([epic('E2', '2026-01-02'), task('E2.1', 'E2'), epic('E1', '2026-01-01'), task('E1.1', 'E1'), task('E1.2', 'E1')]);
-  const table = join(f.base, 'agents');
-  writeFileSync(table, `workers|2\n${readFileSync(new URL('../agents.example', import.meta.url), 'utf8')}`);
+  const table = f.table(`workers|2\n${example}`);
   const result = await f.run({ RALPH_AGENTS: table });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(f.claims(), ['update E1.1 --claim', 'update E1.2 --claim', 'update E2.1 --claim']);
@@ -267,7 +275,7 @@ test('a new-ui ticket without a Mockup line is skipped with a reminder; one with
 test('a running Codex agent shows its context size from its session file', async () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1')]);
   // Steps and context are read every 2s, so the worker must outlive one read.
-  const result = await f.run({ FIXTURE_LIMITED: 'claude', FIXTURE_WORKER_SLEEP: '3', RALPH_PR_POLL: '0.5' }, [], out => /\(codex gpt-6\.2-sol medium 5k ctx, 0m\)/.test(out), 'SIGKILL');
+  const result = await f.run({ FIXTURE_LIMITED: 'claude', FIXTURE_WORKER_SLEEP: '3', RALPH_AGENTS: f.table(`poll|0.5\n${example}`) }, [], out => /\(codex gpt-6\.2-sol medium 5k ctx, 0m\)/.test(out), 'SIGKILL');
   assert.match(result.stdout, / {2}worker E1\.1 \(codex gpt-6\.2-sol medium 5k ctx, 0m\): /);
 });
 
@@ -283,16 +291,14 @@ test('with Claude out of usage a Codex worker takes the task; the reviewer waits
 
 test('only agents with a line in the agents file run; a stage with no line, or a worker count argument, is refused', async () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1')]);
-  const table = join(f.base, 'agents');
-  writeFileSync(table, ['claude', 'codex'].flatMap(agent => [`worker|${agent}|w|-`, `reviewer|${agent}|r|-`]).map(line => line.includes('claude') ? `# ${line}` : line).join('\n'));
+  const table = f.table(['claude', 'codex'].flatMap(agent => [`worker|${agent}|w|-`, `reviewer|${agent}|r|-`]).map(line => line.includes('claude') ? `# ${line}` : line).join('\n'));
   const result = await f.run({ RALPH_AGENTS: table });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const agents = f.read('agents');
   assert.deepEqual(agents.map(line => line.split(' ').slice(0, 6).join(' ')), ['codex E1.1 exec --approve-for-me -m w', 'codex E1.1 exec --approve-for-me -m r']);
 
   const g = fixture([epic('E1'), task('E1.1', 'E1')]);
-  writeFileSync(table, 'worker|codex|w|-\n');
-  const refused = await g.run({ RALPH_AGENTS: table });
+  const refused = await g.run({ RALPH_AGENTS: g.table('worker|codex|w|-') });
   assert.equal(refused.status, 1);
   assert.match(refused.stderr, /No reviewer line in /);
 
@@ -345,7 +351,7 @@ test('failed runs count across restarts; needs-human resets the count', async ()
 
 test('after one Ctrl+C it waits for the running agents without polling gh and bd in a loop', async () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1')]);
-  const result = await f.run({ FIXTURE_WORKER_SLEEP: '1', RALPH_PR_POLL: '5' }, [], out => /as worker for E1\.1/.test(out));
+  const result = await f.run({ FIXTURE_WORKER_SLEEP: '1', RALPH_AGENTS: f.table(`poll|5\n${example}`) }, [], out => /as worker for E1\.1/.test(out));
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /E1\.1: PR in review\./);
   assert.ok(f.read('bd-calls').filter(call => call.startsWith('epic')).length <= 3, f.read('bd-calls').join('\n'));
@@ -406,8 +412,7 @@ test('the reviewer takes the PR that unblocks the most tasks first, counting the
   const pr = (number, id) => ({ number, headRefName: id, title: id, state: 'OPEN', author: { login: 'owner' }, reviews: [], comments: [], statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }] });
   writeFileSync(join(f.fix, 'prs.json'), JSON.stringify([pr(1, 'E1.1'), pr(2, 'E1.2')]));
   // One reviewer, so PRs are approved, and merged, in review order.
-  const table = join(f.base, 'agents');
-  writeFileSync(table, `reviewers|1\n${readFileSync(new URL('../agents.example', import.meta.url), 'utf8')}`);
+  const table = f.table(`reviewers|1\n${example}`);
   const result = await f.run({ RALPH_AGENTS: table });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(f.read('merges'), ['2', '1']);
@@ -463,8 +468,7 @@ test('a reviewer stopped by a second Ctrl+C after its fix turned CI red gets the
 
 test('reviewer|human: a PR in review with no kept session gets a fix for your comments since its last commit', async () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1', { status: 'in_progress', labels: ['in-review'] })]);
-  const table = join(f.base, 'agents');
-  writeFileSync(table, 'worker|claude|sonnet|high\nreviewer|human\n');
+  const table = f.table('worker|claude|sonnet|high\nreviewer|human\n');
   // As a run stopped right after the worker labelled it: its worktree and PR are there, no session was kept.
   const tree = join(f.base, 'repo-pr', 'E1.1');
   f.git('worktree', 'add', '-q', '-b', 'E1.1', tree);
@@ -482,8 +486,7 @@ test('reviewer|human: a PR in review with no kept session gets a fix for your co
 
 test('reviewer|human: the worker session is compacted and waits; your review is fixed in that session; your merge closes the task', async () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1')]);
-  const table = join(f.base, 'agents');
-  writeFileSync(table, 'worker|claude|sonnet|high\nreviewer|claude|opus|high\nreviewer|human\n');
+  const table = f.table('worker|claude|sonnet|high\nreviewer|claude|opus|high\nreviewer|human\n');
   // As GitHub: the owner comments on the PR, later merges it. Renamed in, so the fake gh never reads half a file.
   const edit = change => {
     const prs = JSON.parse(readFileSync(join(f.fix, 'prs.json'), 'utf8'));
@@ -537,8 +540,7 @@ test('reviewer|human: the worker session is compacted and waits; your review is 
 
 test('worker|human: no worker runs; your PR is reviewed once its CI passes, a red one waits for you', async () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1'), task('E1.2', 'E1'), task('E1.3', 'E1')]);
-  const table = join(f.base, 'agents');
-  writeFileSync(table, 'workers|2\nworker|human\nreviewer|claude|opus|high\n');
+  const table = f.table('workers|2\nworker|human\nreviewer|claude|opus|high\n');
   // No worker prompt is needed, and your work in progress may sit in the checkout.
   rmSync(join(f.cwd, '.ralph-tui/pr-worker.md'));
   writeFileSync(join(f.cwd, 'wip.txt'), 'half done\n');
@@ -568,8 +570,7 @@ test('worker|human: no worker runs; your PR is reviewed once its CI passes, a re
 
 test('reviewer|none: no reviewer runs; a green PR merges at once; without merger lines a worker agent merges the base into a conflicting one', async () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1'), task('E1.2', 'E1')]);
-  const table = join(f.base, 'agents');
-  writeFileSync(table, 'worker|claude|sonnet|high\nreviewer|none\n');
+  const table = f.table('worker|claude|sonnet|high\nreviewer|none\n');
   rmSync(join(f.cwd, '.ralph-tui/pr-reviewer.md'));
   const result = await f.run({ RALPH_AGENTS: table, FIXTURE_CONFLICT: 'E1.1' });
   assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -602,8 +603,7 @@ test('2 reviewers run at once; a conflicting approved PR gets the merger agent, 
 
 test('worker|human with reviewer|human is refused', async () => {
   const f = fixture([epic('E1'), task('E1.1', 'E1')]);
-  const table = join(f.base, 'agents');
-  writeFileSync(table, 'worker|human\nreviewer|human\n');
+  const table = f.table('worker|human\nreviewer|human\n');
   const result = await f.run({ RALPH_AGENTS: table });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /worker\|human and reviewer\|human: that leaves ralph-afk --pr nothing to do/);
@@ -673,4 +673,17 @@ test('a supervisor killed with SIGKILL takes its running agents with it', async 
     for (let i = 0; i < 50 && alive(); i++) await new Promise(resolve => setTimeout(resolve, 100));
     assert.ok(!alive(), 'worker still running after its supervisor died');
   } finally { if (alive()) process.kill(pid, 'SIGKILL'); }
+});
+
+test('a running --pr applies a changed agents file, keeps the old one while it is bad, and leaves mode lines for the next start', async () => {
+  const f = fixture([epic('E1'), task('E1.1', 'E1')]);
+  const table = f.table();
+  let step = 0;
+  const result = await f.run({ RALPH_AGENTS: table }, [], out => {
+    if (step === 0 && /Out of work/.test(out)) { step = 1; writeFileSync(table, `workers|none\n${example}`); }
+    if (step === 1 && /Not applying .*: line 1: workers must be a whole number from 1/.test(out)) { step = 2; writeFileSync(table, `workers|1\nreviewer|none\npoll|0.05\n${example}`); }
+    return step === 2 && /next start of ralph-afk --pr/.test(out);
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /Applied .*agents-\d+: up to 1 workers and 2 reviewers; running agents keep their settings\./);
 });
