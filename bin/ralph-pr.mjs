@@ -1,7 +1,7 @@
 // ralph-afk --pr: parallel PR mode. Each worker takes one ready task into its own worktree and
 // branch, opens a PR and waits for CI; up to reviewers|N reviewers review, fix and approve green PRs. The
 // supervisor squash-merges approved green PRs; the merger agent merges the base into a conflicting one.
-// ralph-afk holds the checkout lock and starts this from the repository root. See docs/ralph.md.
+// ralph-afk holds the checkout lock and starts this from the repository root. See README.md.
 import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
