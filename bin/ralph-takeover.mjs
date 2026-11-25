@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, readdirSync, realpathSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -106,8 +106,9 @@ try {
   // Start fresh without a prompt or --force. Ralph 0.12.0's run --resume tries
   // to acquire its lock twice; retain the old state for inspection instead.
   const archive = `.ralph-tui/reports/takeover-${Date.now()}-${process.pid}`;
-  mkdirSync(archive, { recursive: true });
-  for (const file of ['session.json', 'session-meta.json', 'progress.md']) {
+  const files = ['session.json', 'session-meta.json', 'progress.md'].filter(file => existsSync(`.ralph-tui/${file}`));
+  if (files.length) mkdirSync(archive, { recursive: true });
+  for (const file of files) {
     try { renameSync(`.ralph-tui/${file}`, `${archive}/${file}`); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
   }

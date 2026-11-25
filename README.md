@@ -474,7 +474,7 @@ in Claude Code (they write only docs and tickets), then let the runners build.
    ```bash
    bd list --status blocked          # external blocker, noted in the task
    bd list --label needs-human       # --pr: tasks or PRs that failed 3 times
-   cat .ralph-tui/progress.md        # what each task did
+   cat .ralph-tui/reports/takeover-*/progress.md .ralph-tui/progress.md  # what each task did
    ```
 
    Answer the notes, unblock tasks, run `ralph-afk` again.

@@ -96,6 +96,13 @@ test('scheduled takeover stops the old Ralph and orphan agent before launching C
   assert.ok(existsSync(join(f.cwd, '.ralph-tui/reports', archive, 'session.json')));
 });
 
+test('takeover with nothing to move creates no archive folder', async t => {
+  const f = fixture(t);
+  const result = await f.run('ralph', '--takeover');
+  assert.equal(result.code, 0, result.output);
+  assert.ok(!existsSync(join(f.cwd, '.ralph-tui/reports')));
+});
+
 test('a named agent gets its model from the agents table, unless --model is given', async t => {
   const f = fixture(t);
   const result = await f.run('ralph', '--takeover', '--agent', 'codex', '--iterations', '3');
