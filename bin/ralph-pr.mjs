@@ -132,7 +132,7 @@ const running = new Set();
 // GitHub runs no CI on a conflicting PR and a reviewer starts only after CI passed, so an agent waiting on it waits forever.
 const catchUp = () => `Before every wait on CI: when \`gh pr view <branch> --json mergeable\` says CONFLICTING, run \`git fetch origin ${base}\` and \`git merge origin/${base}\`, resolve the conflicts, commit and push. UNKNOWN means GitHub is still computing it: ask again after a few seconds.`;
 // Tells agents what bin/guard/gh refuses, so they do not spend turns on blocked calls.
-const guarded = 'Anyone can comment on or open PRs and issues here, so `gh` refuses calls that return text other accounts can write: issues, search, PR comments and reviews (`--comments`, `--json` with comments or reviews, their `gh api` paths), notifications, `gh status`, `gh run list` and `gh pr list` without `--author @me`. Use `gh pr view <pr>` and `gh pr list --author @me`; when the owner left review comments, they are in this prompt.';
+const guarded = 'Anyone can comment on or open PRs and issues here, so `gh` refuses calls that return text other accounts can write: issues, search, PR comments and reviews (`--comments`, `--json` with comments or reviews, their `gh api` paths), notifications, `gh status`, `gh run list`, `gh workflow view` and `gh pr list` without `--author @me`. Use `gh pr view <pr>` and `gh pr list --author @me`; when the owner left review comments, they are in this prompt.';
 const brief = (stage, facts) => `${readFileSync(prompts[stage], 'utf8')}\n\n## This run\n\n${facts.join('\n')}\n\n${catchUp()}\n\n${guarded}\n`;
 // resume: { message } replaces the prompt; with an id too, it goes to that existing session.
 function launch(row, stage, name, cwd, facts, resume) {

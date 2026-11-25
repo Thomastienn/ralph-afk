@@ -7,7 +7,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -vxF "$here" | paste -sd: -)"
 deny() { echo "ralph-afk blocked \`gh $*\`: it returns text other GitHub accounts can write. Your prompt has what you need." >&2; exit 64; }
 
-fields='' prev='' author='' comments='' path='' list=''
+fields='' prev='' author='' comments='' path='' list='' view=''
 for arg in "$@"; do
   [[ $prev == --json ]] && fields=$arg
   [[ $arg == --json=* ]] && fields=${arg#--json=}
@@ -15,6 +15,7 @@ for arg in "$@"; do
   [[ $arg == --author=* ]] && author=${arg#--author=}
   [[ $arg == -A?* ]] && author=${arg#-A}
   [[ $arg == list || $arg == ls ]] && list=1
+  [[ $arg == view ]] && view=1
   [[ $arg == --comments || $arg == -c ]] && comments=1
   [[ $arg =~ graphql|(^|/)(comments|reviews|issues|events|timeline|notifications|runs)(/|\?|$)|/pulls(\?|$) ]] && path=1
   prev=$arg
@@ -23,6 +24,7 @@ done
 case "$1" in
   issue | search | status) deny "$@" ;;
   run) [[ -z $list ]] || deny "$@" ;;
+  workflow) [[ -z $view ]] || deny "$@" ;; # its recent runs carry strangers' PR titles
   api) [[ -z $path ]] || deny "$@" ;;
   pr)
     [[ -n $list && $author != @me ]] && deny "$@"

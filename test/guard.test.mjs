@@ -21,6 +21,7 @@ test('gh calls that return text other accounts can write are refused', () => {
     ['api', 'repos/{owner}/{repo}/pulls/3/comments'], ['api', 'repos/{owner}/{repo}/issues/3/comments?per_page=100'], ['api', '/repos/o/r/pulls/3/reviews'],
     ['api', 'repos/o/r/issues'], ['api', 'repos/o/r/pulls'], ['api', 'repos/o/r/issues/3/timeline'], ['api', 'graphql', '-f', 'query=x'],
     ['status'], ['run', 'list'], ['run', 'ls'], ['run', '-R', 'o/r', 'list', '--workflow', 'ci.yml'],
+    ['workflow', 'view', 'ci.yml'], ['workflow', '-R', 'o/r', 'view', 'ci.yml', '--yaml'],
     ['api', 'notifications'], ['api', '/notifications?all=true'], ['api', '-X', 'GET', 'notifications/threads/1'],
     ['api', 'repos/o/r/actions/runs'], ['api', '/repos/o/r/actions/runs?branch=T-1'], ['api', '--method', 'GET', 'repos/o/r/actions/runs/9/jobs'],
     ['api', 'repos/o/r/actions/workflows/ci.yml/runs'],
