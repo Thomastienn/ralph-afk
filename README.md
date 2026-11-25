@@ -334,8 +334,9 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
   the `gh` login, so a stranger's PR from a branch named after a task is never
   reviewed or merged. Agents run with `bin/guard/gh` first on `PATH`, which
   refuses the `gh` calls that return text other accounts can write: issues,
-  search, comments, reviews and `gh pr list` without `--author`. Every prompt
-  says so, and a fixing worker gets your comments in its prompt instead.
+  search, comments, reviews, notifications, `gh status`, `gh run list` and
+  `gh pr list` without `--author @me`. Every prompt says so, and a fixing
+  worker gets your comments in its prompt instead.
 - A PR labelled `in-review` whose CI failed before any review gets
   `needs-human`, not a reviewer. To hand it back to a worker, remove both
   labels. Once a reviewer has started a PR, red CI goes back to a reviewer,
