@@ -35,8 +35,8 @@ const tone = text => /fail|could not|exited|needs a human|needs-human|not usable
 
 // view: { header, stopping, paused, waiting, jobs, prs, logs, focus, scroll, settings, now, color }; header is a list of fields;
 // jobs carry slot, stage, Task, Title, PR, agent, model, effort, context, started, steps, file.
-// settings: { tab, row, col, buffer, note, text, file } while the settings view is open; buffer is the value being typed,
-// file the one a save writes.
+// settings: { tab, row, col, buffer, note, text, file, confirm } while the settings view is open; buffer is the value being typed,
+// file the one a save writes, confirm true while d waits for y.
 // Returns the screen as at most rows lines, each at most cols characters wide.
 export function render({ header, stopping, paused, waiting, jobs, prs, logs, focus, scroll = 0, settings, now, color = true }, cols, rows) {
   // A line is a list of [text, SGR style] parts, cut to the terminal width before it is styled.
@@ -77,7 +77,7 @@ export function render({ header, stopping, paused, waiting, jobs, prs, logs, foc
   };
   let lines;
   if (settings) {
-    const { tab, row, col, buffer, note } = settings;
+    const { tab, row, col, buffer, note, confirm } = settings;
     let list = [];
     let problem = null;
     try { list = settingsRows(settings.text, tab); } catch (error) { problem = `Agents file ${error.message}; fix it by hand.`; }
@@ -90,7 +90,7 @@ export function render({ header, stopping, paused, waiting, jobs, prs, logs, foc
     const body = list.map((entry, at) => [[`  ${entry.label.padEnd(12)}`, at === row ? '1' : entry.off ? '2' : ''], ...entry.cells.map((_, i) => cell(entry, i, at)), ...(entry.help ? [[`  ${entry.help}`, '2']] : [])]);
     const tail = [rule, problem ? [[` ${problem}`, '31']] : note ? [[` ${note[0]}`, note[1]]] : [[' Changes apply to the next agent started; running agents keep theirs.', '2']],
       // The key line wraps: the Models keys do not fit 80 columns.
-      ...flow((buffer !== null ? [['Enter', 'save'], ['Esc', 'cancel']] : [['Tab', 'next tab'], ['↑↓←→', 'move'], ['Enter', 'edit'],
+      ...flow((confirm ? [['y', 'delete'], ['any other key', 'keep']] : buffer !== null ? [['Enter', 'save'], ['Esc', 'cancel']] : [['Tab', 'next tab'], ['↑↓←→', 'move'], ['Enter', 'edit'],
         ...(tab === 0 ? [['a', 'add a copy'], ['d', 'delete'], ['Space', 'off/on']] : []), ['Esc', 'back']]).map(pair => keys([pair])), [], [], [])];
     const top = [bar(' ralph-pr settings', `${settings.file ?? ''} `, '7'), TABS.map((name, i) => [` ${name} `, i === tab ? '7;1' : '2']), [], ...body];
     lines = [...top.slice(0, Math.max(1, rows - tail.length)), ...Array(Math.max(0, rows - tail.length - top.length)).fill([]), ...tail];
@@ -166,6 +166,14 @@ export function startTui(state, interrupt, file, own, saved, pause, resume) {
     let list = [];
     try { list = settingsRows(s.text, s.tab); } catch {}
     const entry = list[s.row];
+    const fit = () => { try { s.row = Math.max(0, Math.min(s.row, settingsRows(s.text, s.tab).length - 1)); } catch {} }; // a broken file shows its error instead
+    // d asks first, so a stray key cannot delete a line: y deletes it, any other key keeps it.
+    if (s.confirm) {
+      s.confirm = false;
+      s.note = null;
+      if (key === 'y') { save(text => change(text, entry.line, 'delete')); fit(); }
+      return;
+    }
     if (s.buffer === null) {
       if (key === '\x1b') settings = null;
       else if (key === '\t' || key === '\x1b[Z') { s.tab = (s.tab + (key === '\t' ? 1 : TABS.length - 1)) % TABS.length; s.row = 0; s.col = 0; }
@@ -175,9 +183,10 @@ export function startTui(state, interrupt, file, own, saved, pause, resume) {
       else if (key === '\x1b[C') s.col = Math.min((entry?.cells.length ?? 1) - 1, s.col + 1);
       else if (key === '\r' && entry) { s.buffer = entry.cells[s.col]; s.note = null; }
       // Models: a adds a copy of the line below it (a new line when there is none), d deletes it, Space turns it off or on.
-      else if (s.tab === 0 && (key === 'a' || (entry && (key === 'd' || key === ' ')))) {
-        if (save(text => change(text, entry?.line, { a: 'copy', d: 'delete', ' ': 'toggle' }[key])) && key === 'a' && entry) s.row++;
-        try { s.row = Math.max(0, Math.min(s.row, settingsRows(s.text, 0).length - 1)); } catch {} // a broken file shows its error instead
+      else if (s.tab === 0 && key === 'd' && entry) { s.confirm = true; s.note = [`Delete ${s.text.split('\n')[entry.line].trim()}? y deletes it.`, '1;33']; }
+      else if (s.tab === 0 && (key === 'a' || (entry && key === ' '))) {
+        if (save(text => change(text, entry?.line, key === 'a' ? 'copy' : 'toggle')) && key === 'a' && entry) s.row++;
+        fit();
       }
       return;
     }

@@ -197,11 +197,16 @@ test('the Models tab adds a copy of a line, turns a line off and on, and deletes
   assert.equal(file(), '# mine\nworker|claude|sonnet|high\nworker|claude|opus|high\nworkers|2\n');
   press(' ');
   assert.equal(file(), '# mine\nworker|claude|sonnet|high\n#worker|claude|opus|high\nworkers|2\n');
-  press('\x1b[A d');
+  press('\x1b[Ad');
+  assert.equal(screen(view({ settings: { tab: 0, row: 0, col: 0, buffer: null, note: null, text: file(), confirm: true } }), 80, 12).at(-1), ' y  delete   any other key  keep  ');
+  press('\x1b'); // d asks first: any other key, Esc too, keeps the line and the view
+  press('dn');
+  assert.equal(file(), '# mine\nworker|claude|sonnet|high\n#worker|claude|opus|high\nworkers|2\n');
+  press('dy');
   assert.equal(file(), '# mine\n#worker|claude|opus|high\nworkers|2\n');
   press(' ');
   assert.equal(file(), '# mine\nworker|claude|opus|high\nworkers|2\n');
-  press('d');
+  press('dy');
   assert.equal(file(), '# mine\nworkers|2\n');
   press('da');
   assert.equal(file(), '# mine\nworkers|2\nworker|claude|sonnet|-\n');

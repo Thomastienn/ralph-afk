@@ -315,7 +315,8 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
     keep the shared settings. With `RALPH_AGENTS` set, that file is edited
     in place. A bad value is not saved. On the Models tab, `a` adds a copy
     of the selected line below it (a `worker|claude|sonnet|-` line when the
-    tab is empty), `d` deletes the line, and `Space` turns it off or back on.
+    tab is empty), `d` deletes the line once `y` confirms it (any other key
+    keeps it), and `Space` turns it off or back on.
     An off line is commented out with `#`, so it stays in the file, listed
     dim and marked `off`; agent lines you commented out by hand show the
     same way. Lines are not reordered here: do that in an editor. `q` does
