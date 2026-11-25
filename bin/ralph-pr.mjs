@@ -20,7 +20,7 @@ const { env } = process;
 const SLOW_FIX = 'Fix test:slow failures'; // the task a failed slow run files
 const trees = join(dirname(root), `${basename(root)}-pr`); // outside the checkout, so nothing lands in .gitignore
 const logs = join(root, '.ralph-tui/pr-logs');
-const agentsFile = env.RALPH_AGENTS || (existsSync('.ralph-tui/agents') ? '.ralph-tui/agents' : join(here, '../agents')); // ralph-afk checked it exists
+let agentsFile = env.RALPH_AGENTS || (existsSync('.ralph-tui/agents') ? '.ralph-tui/agents' : join(here, '../agents')); // ralph-afk checked it exists
 // A checkout's own .ralph-tui/pr-<stage>.md beats the built-in prompts/pr-<stage>.md.
 const prompts = Object.fromEntries(['worker', 'reviewer', 'merger'].map(stage => {
   const own = `.ralph-tui/pr-${stage}.md`;
@@ -621,7 +621,10 @@ let idle = false;
 let shown = 0; // when the last status block printed
 let latest = { prs: [], waiting: 0 }; // the last check, for the dashboard
 let wake = () => {}; // a save in the settings view ends the wait, so a new worker count applies at once
-if (process.stdin.isTTY && process.stdout.isTTY) screen = startTui(dashboard, interrupt, agentsFile, () => { reload(); wake(); });
+// The settings view saves to the project's own file, so a change made here never reaches other projects: the first
+// save copies the shared file there. RALPH_AGENTS names the file to use, so that one is edited in place.
+const own = env.RALPH_AGENTS ? agentsFile : '.ralph-tui/agents';
+if (process.stdin.isTTY && process.stdout.isTTY) screen = startTui(dashboard, interrupt, () => agentsFile, own, () => { agentsFile = own; reload(); wake(); });
 log(`PR mode on ${base}: ${humanWorker ? 'you write the code' : `up to ${slots} workers`}, ${human ? 'you review on GitHub' : noReview ? 'no reviewer, green PRs merge at once' : `up to ${reviewerSlots} reviewers`}.`);
 // One pass over the queue; true once a requested stop has nothing left running.
 async function poll() {

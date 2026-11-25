@@ -141,7 +141,8 @@ test('keys that arrive in one chunk each count: q pressed twice while the loop w
 
 test('the settings view shows the agent lines, then each setting with its default marked', () => {
   const text = '# mine\nworker|claude|sonnet|high\nreviewer|codex|gpt|-\nworkers|4\n';
-  const models = screen(view({ settings: { tab: 0, row: 1, col: 1, buffer: null, note: null, text } }), 80, 12);
+  const models = screen(view({ settings: { tab: 0, row: 1, col: 1, buffer: null, note: null, text, file: '.ralph-tui/agents' } }), 80, 12);
+  assert.match(models[0], /^ ralph-pr settings +\.ralph-tui\/agents $/);
   assert.equal(models[1], ' Models  Capacity  Timing ');
   assert.deepEqual(models.slice(3, 5), ['  worker       claude  sonnet  high ', '  reviewer     codex   gpt     -    ']);
   assert.equal(models.length, 12);
@@ -154,17 +155,21 @@ test('the settings view shows the agent lines, then each setting with its defaul
   assert.match(broken.at(-2), /^ Agents file line 1: workers must be a whole number from 1; fix it by hand\.$/);
 });
 
-test('s edits the agents file in place: q types, a bad value is not saved, Esc goes back and q stops again', t => {
+test('s edits a copy of the shared agents file, then that copy in place: q types, a bad value is not saved, Esc goes back and q stops again', t => {
   const { stdin, stdout } = process;
   for (const name of ['setRawMode', 'resume', 'pause']) { stdin[name] = () => stdin; t.after(() => delete stdin[name]); }
   t.mock.method(stdout, 'write', () => true);
   for (const [name, size] of [['rows', 24], ['columns', 80]]) { stdout[name] = size; t.after(() => delete stdout[name]); }
-  const file = join(mkdtempSync(join(tmpdir(), 'ralph-settings-')), 'agents');
-  writeFileSync(file, '# mine\nworker|claude|sonnet|high\nreviewer|claude|opus|high\n');
-  let stops = 0, saves = 0;
-  const tui = startTui(() => view(), () => stops++, file, () => saves++);
+  // The shared file is in use; the first save copies it to the project's own file, the next ones edit that.
+  const dir = mkdtempSync(join(tmpdir(), 'ralph-settings-'));
+  const shared = join(dir, 'shared');
+  const own = join(dir, 'agents');
+  writeFileSync(shared, '# mine\nworker|claude|sonnet|high\nreviewer|claude|opus|high\n');
+  let file = shared, stops = 0, saves = 0;
+  const tui = startTui(() => view(), () => stops++, () => file, own, () => { file = own; saves++; });
   const press = keys => stdin.emit('data', Buffer.from(keys));
   press('s\x1b[B\x1b[C\r\x7f\x7f\x7f\x7fsq\r'); // reviewer model: opus becomes sq
+  assert.equal(readFileSync(shared, 'utf8'), '# mine\nworker|claude|sonnet|high\nreviewer|claude|opus|high\n');
   assert.equal(readFileSync(file, 'utf8'), '# mine\nworker|claude|sonnet|high\nreviewer|claude|sq|high\n');
   press('\t\r\x7f0\r'); // workers|0 is refused
   assert.equal(readFileSync(file, 'utf8'), '# mine\nworker|claude|sonnet|high\nreviewer|claude|sq|high\n');

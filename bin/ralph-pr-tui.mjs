@@ -1,6 +1,6 @@
 // Live dashboard for ralph-afk --pr: one panel per running agent, or one agent full screen.
 // ralph-pr.mjs starts it only when stdin and stdout are a terminal and supplies the data.
-// s opens the settings view, which edits the agents file in place.
+// s opens the settings view, which edits the agents file one line at a time.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { DEFAULTS, edit, parseAgents } from './ralph-agents.mjs';
 
@@ -30,7 +30,8 @@ const tone = text => /fail|could not|exited|needs a human|needs-human|not usable
 
 // view: { header, stopping, jobs, prs, logs, focus, scroll, settings, now, color }; header is a list of fields;
 // jobs carry slot, stage, Task, Title, PR, agent, model, effort, context, started, steps, file.
-// settings: { tab, row, col, buffer, note, text } while the settings view is open; buffer is the value being typed.
+// settings: { tab, row, col, buffer, note, text, file } while the settings view is open; buffer is the value being typed,
+// file the one a save writes.
 // Returns the screen as at most rows lines, each at most cols characters wide.
 export function render({ header, stopping, jobs, prs, logs, focus, scroll = 0, settings, now, color = true }, cols, rows) {
   // A line is a list of [text, SGR style] parts, cut to the terminal width before it is styled.
@@ -84,7 +85,7 @@ export function render({ header, stopping, jobs, prs, logs, focus, scroll = 0, s
     const body = list.map((entry, at) => [[`  ${entry.label.padEnd(12)}`, at === row ? '1' : ''], ...entry.cells.map((_, i) => cell(entry, i, at)), ...(entry.help ? [[`  ${entry.help}`, '2']] : [])]);
     const tail = [rule, problem ? [[` ${problem}`, '31']] : note ? [[` ${note[0]}`, note[1]]] : [[' Changes apply to the next agent started; running agents keep theirs.', '2']],
       keys(buffer === null ? [['Tab', 'next tab'], ['↑↓←→', 'move'], ['Enter', 'edit'], ['Esc', 'back']] : [['Enter', 'save'], ['Esc', 'cancel']])];
-    const top = [bar(' ralph-pr settings', '', '7'), TABS.map((name, i) => [` ${name} `, i === tab ? '7;1' : '2']), [], ...body];
+    const top = [bar(' ralph-pr settings', `${settings.file ?? ''} `, '7'), TABS.map((name, i) => [` ${name} `, i === tab ? '7;1' : '2']), [], ...body];
     lines = [...top.slice(0, Math.max(1, rows - tail.length)), ...Array(Math.max(0, rows - tail.length - top.length)).fill([]), ...tail];
   } else if (focus) {
     const body = bodyRows(rows);
@@ -132,8 +133,8 @@ export function render({ header, stopping, jobs, prs, logs, focus, scroll = 0, s
 }
 
 // state() returns { header, stopping, jobs, prs, logs }; interrupt runs on q or Ctrl+C (raw mode turns off SIGINT).
-// file is the agents file the settings view edits; saved runs after each save.
-export function startTui(state, interrupt, file, saved) {
+// file() is the agents file in use; the settings view saves to own, a copy of it when they differ. saved runs after each save.
+export function startTui(state, interrupt, file, own, saved) {
   const { stdin, stdout } = process;
   let focus = null;
   let scroll = 0;
@@ -167,14 +168,14 @@ export function startTui(state, interrupt, file, saved) {
     else if (key === '\x7f' || key === '\b') s.buffer = s.buffer.slice(0, -1);
     else if (key !== '\r') { if (key >= ' ' && key.length === 1) s.buffer += key; }
     else {
-      const now = readFileSync(file, 'utf8');
+      const now = readFileSync(file(), 'utf8');
       // An edit by hand since the view opened moves lines: show the file as it is now instead of writing over it.
       if (now !== s.text) { s.text = now; s.note = ['The agents file changed on disk; showing it as it is now. Try again.', '33']; }
       else {
         try {
           s.text = edit(now, entry.target(s.col), s.buffer);
-          writeFileSync(file, s.text);
-          s.note = ['Saved.', '32'];
+          writeFileSync(own, s.text);
+          s.note = [`Saved to ${own}.`, '32'];
           saved();
         } catch (error) { s.note = [`Not saved: ${error.message}.`, '31']; }
       }
@@ -188,7 +189,7 @@ export function startTui(state, interrupt, file, saved) {
       if (key === '\x03') interrupt();
       else if (settings) setting(key);
       else if (key === 'q') interrupt();
-      else if (key === 's') settings = { tab: 0, row: 0, col: 0, buffer: null, note: null, text: readFileSync(file, 'utf8') };
+      else if (key === 's') settings = { tab: 0, row: 0, col: 0, buffer: null, note: null, text: readFileSync(file(), 'utf8'), file: own };
       else if (job) { focus = job; scroll = 0; }
       else if (key === '\x1b') { focus = null; scroll = 0; }
       else if (focus && key === '\x1b[A') scroll = Math.min(scroll + 1, Math.max(0, focus.steps.length - bodyRows(stdout.rows)));

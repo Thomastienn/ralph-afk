@@ -299,8 +299,12 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
     effort), Capacity (`workers`, `reviewers`, `tries`, `slow-every`) and
     Timing (`schedule`, `wait`, `poll`). `Tab` switches tab, the arrows move,
     `Enter` edits and `Enter` again saves; `Esc` cancels or goes back. A save
-    rewrites only that line of the agents file, so comments and order stay,
-    and applies as in [Settings](#settings). A bad value is not saved. Lines
+    rewrites only that line, so comments and order stay, and applies as in
+    [Settings](#settings). It goes to the project's `.ralph-tui/agents`
+    (shown top right): when the shared file is in use, the first save copies
+    it there, and the project uses its own file from then on. Other projects
+    keep the shared settings. With `RALPH_AGENTS` set, that file is edited
+    in place. A bad value is not saved. Lines
     are not added, removed or reordered here: do that in an editor. `q` does
     not stop the run while the settings are open.
   - `q` or Ctrl+C stops, the same as Ctrl+C below.
