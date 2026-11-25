@@ -4,7 +4,7 @@
 // ralph-afk holds the checkout lock and starts this from the repository root. See README.md.
 import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -184,7 +184,12 @@ function claudeSteps(text, job) {
 }
 // The complete lines added to file since the last look; job[key] keeps the place.
 function newLines(job, key, file) {
-  const fresh = readFileSync(file).subarray(job[key] ?? 0);
+  const fd = openSync(file, 'r'); // read from the saved byte offset only: logs grow for hours
+  let fresh;
+  try {
+    fresh = Buffer.alloc(Math.max(0, fstatSync(fd).size - (job[key] ?? 0)));
+    fresh = fresh.subarray(0, readSync(fd, fresh, 0, fresh.length, job[key] ?? 0));
+  } finally { closeSync(fd); }
   const end = fresh.lastIndexOf('\n') + 1; // a line still being written waits for the next look
   job[key] = (job[key] ?? 0) + end;
   return fresh.subarray(0, end).toString('utf8').split('\n');
