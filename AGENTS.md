@@ -13,8 +13,9 @@ Notes for coding agents working on this repository.
   `google-chrome --headless --hide-scrollbars --window-size=<W>,<H> --screenshot=docs/ralph-pr.png file:///tmp/ralph-pr.svg`,
   with `<W>`,`<H>` the SVG's `width` and `height`. Look at the PNG before
   committing.
-- Run `node --test test/*.test.mjs` before you finish. Tests use fake CLIs and
-  `agents.example`, never the owner's `agents` file.
+- Run `nice -n 19 node --test --test-concurrency=2 test/*.test.mjs` before
+  you finish. Tests use fake CLIs and `agents.example`, never the owner's
+  `agents` file.
 
 ## Layout
 

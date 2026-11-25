@@ -486,7 +486,7 @@ ones on the next cycle.
 ## Tests
 
 ```bash
-node --test test/*.test.mjs
+nice -n 19 node --test --test-concurrency=2 test/*.test.mjs
 ```
 
 Runs the scripts against fake CLIs in a temporary checkout. No model calls;
