@@ -415,6 +415,8 @@ With a `reviewer|human` line in the agents file, no reviewer agent runs:
 - Only your comments and reviews start a fix; other accounts' are ignored.
 - Only comments newer than the last run count: newer than the worker's end,
   or than a fix's start. A comment posted while a fix runs gets its own fix.
+  An inline comment counts from when you submit its review, not from when
+  you drafted it.
 - When the worker's agent cannot run now (limit, schedule) or its session
   failed to resume, a fresh worker gets the task prompt plus your comments.
 - A fix that exits with an error counts as a failed run, as for workers. A fix

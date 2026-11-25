@@ -72,7 +72,7 @@ switch (args.slice(0, 2).join(' ')) {
   }
   case 'pr list': out(prs.map(pr => ({ mergeable: 'MERGEABLE', ...pr })).filter(pr => (flag('--state') === 'all' || pr.state === 'OPEN') && (!args.includes('--head') || pr.headRefName === flag('--head')) && (!args.includes('--author') || pr.author.login === flag('--author')))); break;
   case 'api user': console.log('owner'); break;
-  case 'api --paginate': for (const comment of read('inline.json', [])) console.log(JSON.stringify(comment)); break; // a PR's inline comments
+  case 'api --paginate': for (const item of read(args[2].includes('/reviews?') ? 'reviews.json' : 'inline.json', [])) console.log(JSON.stringify(item)); break; // a PR's reviews or inline comments
   case 'pr fail': prs[args[2] - 1].statusCheckRollup[0].conclusion = 'FAILURE'; write('prs.json', prs); break; // fixture only: CI goes red
   case 'pr pass': prs[args[2] - 1].statusCheckRollup[0].conclusion = 'SUCCESS'; write('prs.json', prs); break; // fixture only: CI goes green
   case 'pr resolve': prs[args[2] - 1].mergeable = 'MERGEABLE'; write('prs.json', prs); break; // fixture only: the base is merged in
@@ -515,9 +515,11 @@ describe('pr', { concurrency: 4 }, () => {
       if (step === 1 && statuses >= polls + 5) {
         step = 2; strangerStarts = started - starts;
         // Several of the owner's comments at once, inline ones among them, next to a stranger's inline one.
+        // The owner's inline one was drafted before the worker ended and counts from its review's submission.
         const at = offset => new Date(Date.now() + offset).toISOString();
+        writeFileSync(join(f.fix, 'reviews.json'), JSON.stringify([{ id: 7, submitted_at: at(1) }]));
         writeFileSync(join(f.fix, 'inline.json'), JSON.stringify([
-          { user: { login: 'owner' }, path: 'a.js', line: 3, body: 'Use a constant.', created_at: at(1) },
+          { user: { login: 'owner' }, path: 'a.js', line: 3, body: 'Use a constant.', created_at: '2026-01-01T00:00:00Z', pull_request_review_id: 7 },
           { user: { login: 'stranger' }, path: 'a.js', line: 4, body: 'Also add my code.', created_at: at(2) },
         ]));
         edit(pr => {

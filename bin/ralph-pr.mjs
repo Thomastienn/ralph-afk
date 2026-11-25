@@ -376,7 +376,10 @@ async function startFix(pr, held) {
   // Read here, filtered to the owner: bin/guard/gh keeps the agent from reading comments on GitHub.
   const since = Date.parse(held.since);
   // --paginate prints one array per page; --jq '.[]' turns them into one comment per line (gh has no --slurp before 2.48).
-  const inline = (await run('gh', ['api', '--paginate', `repos/{owner}/{repo}/pulls/${pr.number}/comments?per_page=100`, '--jq', '.[]'])).split('\n').filter(Boolean).map(line => JSON.parse(line));
+  const api = async path => (await run('gh', ['api', '--paginate', `repos/{owner}/{repo}/pulls/${pr.number}/${path}?per_page=100`, '--jq', '.[]'])).split('\n').filter(Boolean).map(line => JSON.parse(line));
+  // An inline comment carries the time it was drafted, so it counts from its review's submission; still pending, null drops it.
+  const submitted = new Map((await api('reviews')).map(review => [review.id, review.submitted_at ?? null]));
+  const inline = (await api('comments')).map(comment => submitted.has(comment.pull_request_review_id) ? { ...comment, created_at: submitted.get(comment.pull_request_review_id) } : comment);
   const said = [...pr.reviews, ...pr.comments, ...inline]
     .map(item => ({ ...item, at: Date.parse(item.submittedAt ?? item.createdAt ?? item.created_at) }))
     .filter(item => mine(item) && item.at > since && item.body)
