@@ -293,7 +293,7 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
     `waiting: press Enter to start`, so you can change settings with `s`
     first. Until `Enter` there are no checks: no agent starts, no PR merges,
     no task or label changes, and no PRs or ready tasks show yet. `q`
-    stops without starting.
+    stops without starting. `ralph-afk --pr --go` skips the wait.
   - A small terminal keeps everything readable. Header fields and long log
     lines wrap. A panel cuts its title before its agent and minutes. Panels
     lose steps and PRs lose lines before the newest 3 log lines leave the

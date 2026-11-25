@@ -49,19 +49,22 @@ agents="${RALPH_AGENTS:-$agents}"
 # reviewer|human, reviewer|none or a setting. This also catches the retired ralph stage and the old probe column.
 # bin/ralph-agents.mjs does the check, the same one ralph-pr.mjs and the dashboard use.
 node "$here/ralph-agents.mjs" "$agents" || exit 1
-usage='Usage: ralph-afk [epic...] | ralph-afk --pr | ralph-afk --init'
+usage='Usage: ralph-afk [epic...] | ralph-afk --pr [--go] | ralph-afk --init'
 # The agents file is the only list of agents: comment a line out to stop using that agent.
 mapfile -t known < <(awk -F'|' '$1 == "worker" { print $2 }' "$agents")
 pr=false
+go=()
 given=()
 while (( $# )); do
   case "$1" in
     --pr) pr=true; shift ;;
+    --go) go=(--go); shift ;;
     -*) echo "$usage" >&2; exit 2 ;;
     *) given+=("$1"); shift ;;
   esac
 done
 "$pr" && (( ${#given[@]} )) && { echo "$usage" >&2; exit 2; }
+"$pr" || (( ! ${#go[@]} )) || { echo "$usage" >&2; exit 2; }
 # Epics are worked in the order given; the default is every ready epic, oldest first.
 # Blocking dependencies between epics set the release order. Re-read before every task.
 # The full suites run once, when every epic is out of ready work, in a gate epic made here.
@@ -96,7 +99,7 @@ setting() { awk -F'|' -v key="$1" '$1 == key { print $2; found = 1; exit } END {
 schedule="$(setting schedule 00-24=claude,codex)"
 wait_s="$(setting wait 600)"
 # --pr: workers|N workers open one PR per task, reviewers|N reviewers approve them and ralph-pr.mjs merges them. The lock stays held.
-if "$pr"; then exec node "$here/ralph-pr.mjs"; fi
+if "$pr"; then exec node "$here/ralph-pr.mjs" "${go[@]}"; fi
 log() { echo "[ralph-afk $(date '+%F %T')] $*"; }
 
 agents_now() {

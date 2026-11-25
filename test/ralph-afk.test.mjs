@@ -158,7 +158,10 @@ test('the retired -a option is refused; sequential mode ignores workers|N, revie
   const f = fixture({ 'TreeTutor-sh8': 1 });
   const retired = f.run({}, ['-a', 'codex']);
   assert.equal(retired.status, 2);
-  assert.match(retired.stderr, /^Usage: ralph-afk \[epic\.\.\.\] \| ralph-afk --pr \| ralph-afk --init$/m);
+  assert.match(retired.stderr, /^Usage: ralph-afk \[epic\.\.\.\] \| ralph-afk --pr \[--go\] \| ralph-afk --init$/m);
+  assert.deepEqual(f.runs(), []);
+  // --go only means something with --pr.
+  assert.equal(f.run({}, ['--go']).status, 2);
   assert.deepEqual(f.runs(), []);
 
   const table = join(f.cwd, 'counted');
