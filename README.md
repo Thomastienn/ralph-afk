@@ -328,6 +328,8 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
 - Task order: parentless tasks first, then by epic age. Skips tasks labelled
   `gate:backlog`, `in-review` or `needs-human`. A `new-ui` task waits for a
   `Mockup:` line in its description.
+- Each worktree links to the main checkout's `node_modules`. The supervisor
+  adds `node_modules` to `.git/info/exclude`, so agents never commit the link.
 - After a merge, the task closes and its branch and worktree are removed. The
   main checkout fast-forwards if it is on the default branch with no local
   changes.
@@ -357,8 +359,8 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
 - A task labelled `in-review` whose PR is no longer open is checked on GitHub.
   If the PR merged while no reviewer was watching, the task closes as after a
   merge. If the PR was closed or never opened, the task gets `needs-human`.
-- A failed `gh`, `bd` or `git` call during a check is logged and retried at the
-  next check. The run does not stop.
+- A failed `gh`, `bd` or `git` call during a check, or while handling an
+  agent's end, is logged and retried at the next check. The run does not stop.
 - A limited agent is not probed again before its reported reset. The next
   line of the same stage takes over.
 - Ctrl+C: as in sequential mode.
@@ -423,6 +425,8 @@ With a `reviewer|human` line in the agents file, no reviewer agent runs:
 - Only your comments and reviews start a fix; other accounts' are ignored.
 - Only comments newer than the last run count: newer than the worker's end,
   or than a fix's start. A comment posted while a fix runs gets its own fix.
+  An inline comment counts from when you submit its review, not from when
+  you drafted it.
 - When the worker's agent cannot run now (limit, schedule) or its session
   failed to resume, a fresh worker gets the task prompt plus your comments.
 - A fix that exits with an error counts as a failed run, as for workers. A fix

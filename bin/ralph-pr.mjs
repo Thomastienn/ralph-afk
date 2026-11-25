@@ -1,10 +1,10 @@
 // ralph-afk --pr: parallel PR mode. Each worker takes one ready task into its own worktree and
 // branch, opens a PR and waits for CI; up to reviewers|N reviewers review, fix and approve green PRs. The
 // supervisor squash-merges approved green PRs; the merger agent merges the base into a conflicting one.
-// ralph-afk holds the checkout lock and starts this from the repository root. See docs/ralph.md.
+// ralph-afk holds the checkout lock and starts this from the repository root. See README.md.
 import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -184,7 +184,12 @@ function claudeSteps(text, job) {
 }
 // The complete lines added to file since the last look; job[key] keeps the place.
 function newLines(job, key, file) {
-  const fresh = readFileSync(file).subarray(job[key] ?? 0);
+  const fd = openSync(file, 'r'); // read from the saved byte offset only: logs grow for hours
+  let fresh;
+  try {
+    fresh = Buffer.alloc(Math.max(0, fstatSync(fd).size - (job[key] ?? 0)));
+    fresh = fresh.subarray(0, readSync(fd, fresh, 0, fresh.length, job[key] ?? 0));
+  } finally { closeSync(fd); }
   const end = fresh.lastIndexOf('\n') + 1; // a line still being written waits for the next look
   job[key] = (job[key] ?? 0) + end;
   return fresh.subarray(0, end).toString('utf8').split('\n');
@@ -290,7 +295,14 @@ async function readyTasks() {
 }
 // Agents read code and run single test files, so a worktree borrows the main checkout's dependencies.
 function borrowModules(path) {
-  if (existsSync(join(root, 'node_modules')) && !existsSync(join(path, 'node_modules'))) symlinkSync(join(root, 'node_modules'), join(path, 'node_modules'));
+  if (!existsSync(join(root, 'node_modules')) || existsSync(join(path, 'node_modules'))) return;
+  symlinkSync(join(root, 'node_modules'), join(path, 'node_modules'));
+  // A `node_modules/` ignore line matches folders only, so `git add -A` in the worktree would commit the link.
+  const exclude = join(commonGit, 'info/exclude');
+  const lines = existsSync(exclude) ? readFileSync(exclude, 'utf8') : '';
+  if (/^node_modules$/m.test(lines)) return;
+  mkdirSync(dirname(exclude), { recursive: true });
+  appendFileSync(exclude, `${lines && !lines.endsWith('\n') ? '\n' : ''}node_modules\n`);
 }
 async function startWorker(task, row) {
   const path = join(trees, task.id);
@@ -364,7 +376,10 @@ async function startFix(pr, held) {
   // Read here, filtered to the owner: bin/guard/gh keeps the agent from reading comments on GitHub.
   const since = Date.parse(held.since);
   // --paginate prints one array per page; --jq '.[]' turns them into one comment per line (gh has no --slurp before 2.48).
-  const inline = (await run('gh', ['api', '--paginate', `repos/{owner}/{repo}/pulls/${pr.number}/comments?per_page=100`, '--jq', '.[]'])).split('\n').filter(Boolean).map(line => JSON.parse(line));
+  const api = async path => (await run('gh', ['api', '--paginate', `repos/{owner}/{repo}/pulls/${pr.number}/${path}?per_page=100`, '--jq', '.[]'])).split('\n').filter(Boolean).map(line => JSON.parse(line));
+  // An inline comment carries the time it was drafted, so it counts from its review's submission; still pending, null drops it.
+  const submitted = new Map((await api('reviews')).map(review => [review.id, review.submitted_at ?? null]));
+  const inline = (await api('comments')).map(comment => submitted.has(comment.pull_request_review_id) ? { ...comment, created_at: submitted.get(comment.pull_request_review_id) } : comment);
   const said = [...pr.reviews, ...pr.comments, ...inline]
     .map(item => ({ ...item, at: Date.parse(item.submittedAt ?? item.createdAt ?? item.created_at) }))
     .filter(item => mine(item) && item.at > since && item.body)
@@ -691,12 +706,20 @@ while (!stopping || running.size) {
   }
   if (stopping && !running.size) break; // also when the stop came during the check
   // Once stopping, halt stays aborted and its sleep returns at once: wait for the agents only, or this spins on gh and bd.
-  await Promise.race([...(stopping ? [] : [sleep(pollMs, null, { signal: halt.signal }).catch(() => {}), new Promise(resolve => { wake = resolve; })]), ...[...running].map(job => job.done)]);
-  for (const job of running) {
+  // An agent whose end failed to be handled waits a poll too, also when stopping; ref: false, so it never delays the exit.
+  await Promise.race([...(stopping ? [] : [sleep(pollMs, null, { signal: halt.signal }).catch(() => {}), new Promise(resolve => { wake = resolve; })]),
+    ...[...running].map(job => job.code === undefined ? job.done : sleep(pollMs, null, { ref: false }))]);
+  for (const job of [...running]) {
     if (job.code === undefined) continue;
     running.delete(job);
-    progress(job);
-    await (job.compact ? compactDone : { worker: workerDone, reviewer: reviewDone, merger: mergerDone }[job.stage])(job);
+    // A failed call here must not end the run either: the agent stays in running, so no check acts on its task, and its end is handled again.
+    try {
+      progress(job);
+      await (job.compact ? compactDone : { worker: workerDone, reviewer: reviewDone, merger: mergerDone }[job.stage])(job);
+    } catch (error) {
+      running.add(job);
+      log(`Handling the end of ${job.name} failed: ${firstLine(error.stderr || error.message)}; trying again in ${pollMs / 1000}s.`);
+    }
   }
 }
 
