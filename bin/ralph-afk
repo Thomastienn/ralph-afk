@@ -5,6 +5,7 @@ set -euo pipefail
 here="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
 root="$(git rev-parse --show-toplevel)"
 cd -- "$root"
+export PATH="$HOME/.bun/bin:$PATH"
 
 # --init: one-time setup of a new checkout. Never overwrites; safe to run again.
 if [[ "${1-}" == --init ]]; then
