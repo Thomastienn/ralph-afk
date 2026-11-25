@@ -46,7 +46,8 @@ The linked files are global Ralph defaults; a project's
 - `config.toml`: selects the `beads-resume` tracker, turns on Ralph's
   auto-commit (the Codex sandbox keeps `.git` read-only), turns off
   `fullAuto` (Codex rejects it).
-- `beads-resume.js`: extends `beads-bv`. Retries unfinished tasks first and
+- `beads-resume.js`: extends `beads-bv`. Retries unfinished tasks first
+  (not `in-review` ones, which wait on their `--pr` PR) and
   lets Ralph start with pending edits, which `--takeover` relies on. Exports a
   local JSONL snapshot; never runs `bd sync`.
 - `beads.hbs`: the prompt each task runs with.
@@ -186,7 +187,8 @@ Each cycle:
 
 1. Closes epics whose children are all closed (`bd epic close-eligible`),
    which unblocks their dependents.
-2. Picks the first epic with a ready or in-progress task. An open parentless
+2. Picks the first epic with a ready or in-progress task (`in-review` tasks
+   wait on their `--pr` PR and do not count). An open parentless
    issue blocking one of its tasks (e.g. a bug filed mid-task) moves under the
    epic so Ralph can work it.
 3. Probes the scheduled agents that have a `worker` line. It stays on the

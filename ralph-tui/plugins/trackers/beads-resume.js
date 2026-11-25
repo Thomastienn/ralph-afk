@@ -23,8 +23,9 @@ export default function createTracker() {
   let started = false;
 
   const actor = () => process.env.BEADS_ACTOR || run('git', 'config', 'user.name');
-  // Only unassigned or own claims; never steal another worker's task.
-  const isOwnUnfinished = (issue, me) => issue.status === 'in_progress' && (!issue.assignee || issue.assignee === me);
+  // Only unassigned or own claims; never steal another worker's task. An in-review task waits on its --pr PR.
+  const isOwnUnfinished = (issue, me) =>
+    issue.status === 'in_progress' && !issue.labels?.includes('in-review') && (!issue.assignee || issue.assignee === me);
   const reopen = issue =>
     bd('update', issue.id, '--status', 'open', '--if-status', 'in_progress', '--if-assignee', issue.assignee || '');
   // Return the task if bd still considers it ready (blockers, deferral, epic scope).

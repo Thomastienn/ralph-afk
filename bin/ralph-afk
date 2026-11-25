@@ -191,7 +191,8 @@ while :; do
   for e in "${epics[@]}"; do
     epic="$e"
     adopt_blockers
-    (( $(count ready) + $(count list --status in_progress) == 0 )) || break
+    # An in-review task waits on its --pr PR: it is not unfinished work.
+    (( $(count ready) + $(bd list --status in_progress --parent "$epic" --json --limit 0 | jq 'map(select(.labels // [] | index("in-review") | not)) | length') == 0 )) || break
     epic=''
   done
   if [[ -z "$epic" ]]; then

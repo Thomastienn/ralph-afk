@@ -24,6 +24,7 @@ function fixture(work = { 'TreeTutor-7t3': 1 }) {
     list) if [[ " $* " == *" --all "* ]]; then cat "${cwd}/all.json" 2>/dev/null || echo '[]'; exit; fi
       if [[ " $* " == *" --parent "* && $* == *open,in_progress,blocked* ]]; then cat "${cwd}/children.json" 2>/dev/null || echo '[]'; exit; fi
       if [[ " $* " == *" --status closed "* ]]; then cat "${cwd}/closed.json" 2>/dev/null || echo '[]'; exit; fi
+      if [[ " $* " == *" --status in_progress "* ]]; then cat "${cwd}/in-progress.json" 2>/dev/null || echo '[]'; exit; fi
       if [[ $* == *closed,blocked* ]]; then jq -n --argjson n "$(cat ${epicWork('--parent')}.done 2>/dev/null || echo 0)" '[range($n)]'; exit; fi
       echo '[]' ;;
     # A made gate is open, so the next check must not make another.
@@ -162,6 +163,15 @@ test('the retired -a option is refused; sequential mode ignores workers|N, revie
   const result = f.run({ RALPH_AGENTS: table });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(f.runs(), ['run --headless --epic TreeTutor-sh8 --iterations 1 --agent codex --model gpt-6.2-sol']);
+});
+
+test('a task waiting in review on its --pr PR is not unfinished work', () => {
+  const f = fixture({});
+  writeFileSync(join(f.cwd, 'in-progress.json'), JSON.stringify([{ id: 'TreeTutor-7t3.1', status: 'in_progress', labels: ['in-review'] }]));
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(f.runs(), []);
+  assert.match(result.stdout, /No ready work/);
 });
 
 test('when an epic runs out of work it closes and the next ready epic starts', () => {
