@@ -71,9 +71,12 @@ source of a structural difference.
    drawn state filled). Capture the mockup and the app with a headless
    browser at 1440x900, in each colour scheme the app has, the same state in
    each pair; add a narrow size when the mockup draws one.
-3. **Compare** pair by pair, region by region, and fix every structural
-   difference and every colour in the wrong role, until each pair matches
-   side by side.
+3. **Compare** region by region and fix every structural difference and
+   every colour in the wrong role. Each image costs context, so keep the loop
+   lean: check sizes, spacing and fonts as text first (computed styles),
+   screenshot only the region you are fixing, and iterate in one scheme. Take
+   the full-page pairs in every scheme once, at the end, and stop when each
+   final pair matches side by side.
 4. **Record** the final pairs under `docs/verification/<task>/` (or where the
    project's docs say), named `<state>-<scheme>-mockup` and
    `<state>-<scheme>-app`, commit them, and list them in the PR body.

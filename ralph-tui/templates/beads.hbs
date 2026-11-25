@@ -17,8 +17,9 @@ Prerequisites: {{dependsOn}}
 - When the description has a `Mockup:` line, the screen must match its
   structure exactly (layout, elements, copy, sizes, spacing, every drawn
   state), with colours from the app's theme tokens by role. Render the mockup
-  and the app at the same size and state, compare the pairs region by region,
-  fix every difference, and commit the final pairs under
+  and the app at the same size and state, compare region by region (computed
+  styles as text first, region-only screenshots while iterating, full-page
+  pairs once at the end), fix every difference, and commit the final pairs under
   `docs/verification/{{taskId}}/`. A difference you cannot remove is an owner
   decision: record it in the notes and end without the completion signal.
 - Implement the acceptance criteria and run the checks relevant to this issue.
