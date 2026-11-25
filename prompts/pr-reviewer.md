@@ -69,8 +69,12 @@ re-check them here.
   changes and check it asserts the criterion's observable outcome, not a mock
   of the code under test or its internals. Rewrite a test that would stay
   green without the change.
-- **Mockup**: a `new-ui` task matches the design its `Mockup:` line links
-  under `docs/mockups/`.
+- **Mockup**: a task with a `Mockup:` line matches its structure exactly
+  (layout, elements, copy, sizes, spacing, every drawn state), with colours
+  mapped to the theme's tokens by role. Open the mockup and the worker's
+  committed screenshot pairs side by side, region by region. A missing pair,
+  a structural difference or a colour in the wrong role that neither the task
+  nor the owner approved is a Must fix.
 - **Personal data**: the diff carries no personal data.
 - **Beads export**: `.beads/issues.jsonl` is unchanged by the PR; revert it
   when it is not.
