@@ -67,12 +67,15 @@ source of a structural difference.
    copy from it as drawn. When a house component cannot reach the mockup's
    look, restyle or replace it: the mockup wins over reuse.
 2. **Render both.** Build and serve the app the way the project's docs say,
+   once, in a watch or dev mode so later edits rebuild in seconds instead of a
+   full build each round,
    over seeded data shaped like the mockup's (same number of items, every
    drawn state filled). Capture the mockup and the app with a headless
    browser at 1440x900, in each colour scheme the app has, the same state in
    each pair; add a narrow size when the mockup draws one.
 3. **Compare** region by region and fix every structural difference and
-   every colour in the wrong role. Each image costs context, so keep the loop
+   every colour in the wrong role. Try a CSS change live in the page first,
+   then write it to the file. Each image costs context, so keep the loop
    lean: check sizes, spacing and fonts as text first (computed styles),
    screenshot only the region you are fixing, and iterate in one scheme. Take
    the full-page pairs in every scheme once, at the end, and stop when each
