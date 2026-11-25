@@ -24,6 +24,7 @@ function fixture(work = { 'TreeTutor-7t3': 1 }) {
     list) if [[ " $* " == *" --all "* ]]; then cat "${cwd}/all.json" 2>/dev/null || echo '[]'; exit; fi
       if [[ " $* " == *" --parent "* && $* == *open,in_progress,blocked* ]]; then cat "${cwd}/children.json" 2>/dev/null || echo '[]'; exit; fi
       if [[ " $* " == *" --status closed "* ]]; then cat "${cwd}/closed.json" 2>/dev/null || echo '[]'; exit; fi
+      if [[ " $* " == *" --status in_progress "* ]]; then cat "${cwd}/in-progress.json" 2>/dev/null || echo '[]'; exit; fi
       if [[ $* == *closed,blocked* ]]; then jq -n --argjson n "$(cat ${epicWork('--parent')}.done 2>/dev/null || echo 0)" '[range($n)]'; exit; fi
       echo '[]' ;;
     # A made gate is open, so the next check must not make another.
@@ -122,11 +123,14 @@ test('a scheduled agent with no worker line never launches; a schedule typo is r
   assert.deepEqual(f.runs(), ['run --headless --epic TreeTutor-sh8 --iterations 1 --agent codex --model gpt-6.2-sol']);
   assert.ok(!f.read('probes').includes('claude'));
 
-  const unknown = fixture();
-  const refused = unknown.run({ RALPH_AGENTS: unknown.table('schedule|00-24=claude,nobody') });
-  assert.equal(refused.status, 1);
-  assert.match(refused.stderr, /Unknown agent in the agents file's schedule: nobody/);
-  assert.deepEqual(unknown.runs(), []);
+  // The same check as --pr: a trailing comma once passed here but not there.
+  for (const schedule of ['schedule|00-24=claude,nobody', 'schedule|00-24=claude,']) {
+    const unknown = fixture();
+    const refused = unknown.run({ RALPH_AGENTS: unknown.table(schedule) });
+    assert.equal(refused.status, 1, schedule);
+    assert.match(refused.stderr, /agents-set line 1: schedule must be space-separated FROM-TO=agents windows/, schedule);
+    assert.deepEqual(unknown.runs(), []);
+  }
 });
 
 test("a checkout's own .ralph-tui/agents overrides the shared agents file", () => {
@@ -145,7 +149,7 @@ test('an agents line with another stage, agent or field count is refused at star
     writeFileSync(old, `# comment\n\nworker|codex|m|-\n${line}\n`);
     const result = f.run({ RALPH_AGENTS: old });
     assert.equal(result.status, 1, line);
-    assert.match(result.stderr, /old-agents line 4: expected stage\|agent\|model\|effort/, line);
+    assert.match(result.stderr, /old-agents line 4: (expected stage\|agent\|model\|effort|\w+ must be )/, line);
   }
   assert.deepEqual(f.runs(), []);
 });
@@ -162,6 +166,15 @@ test('the retired -a option is refused; sequential mode ignores workers|N, revie
   const result = f.run({ RALPH_AGENTS: table });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.deepEqual(f.runs(), ['run --headless --epic TreeTutor-sh8 --iterations 1 --agent codex --model gpt-6.2-sol']);
+});
+
+test('a task waiting in review on its --pr PR is not unfinished work', () => {
+  const f = fixture({});
+  writeFileSync(join(f.cwd, 'in-progress.json'), JSON.stringify([{ id: 'TreeTutor-7t3.1', status: 'in_progress', labels: ['in-review'] }]));
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(f.runs(), []);
+  assert.match(result.stdout, /No ready work/);
 });
 
 test('when an epic runs out of work it closes and the next ready epic starts', () => {
