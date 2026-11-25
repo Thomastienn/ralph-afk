@@ -319,6 +319,8 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
 - Task order: parentless tasks first, then by epic age. Skips tasks labelled
   `gate:backlog`, `in-review` or `needs-human`. A `new-ui` task waits for a
   `Mockup:` line in its description.
+- Each worktree links to the main checkout's `node_modules`. The supervisor
+  adds `node_modules` to `.git/info/exclude`, so agents never commit the link.
 - After a merge, the task closes and its branch and worktree are removed. The
   main checkout fast-forwards if it is on the default branch with no local
   changes.

@@ -239,6 +239,15 @@ describe('pr', { concurrency: 4 }, () => {
     assert.match(prompts, /^# PR reviewer$[\s\S]*MUST invoke the `ponytail:ponytail-review` skill/m);
   });
 
+  test('worktrees borrow node_modules, and Git ignores the link', async () => {
+    const f = fixture([epic('E1'), task('E1.1', 'E1')]);
+    mkdirSync(join(f.cwd, 'node_modules')); // empty, so git status does not list it
+    const result = await f.run();
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const exclude = readFileSync(join(f.cwd, '.git/info/exclude'), 'utf8');
+    assert.equal(exclude.match(/^node_modules$/gm)?.length, 1, exclude); // added once, for all worktrees
+  });
+
   test('--pr refuses to start with uncommitted changes and pushes nothing', async () => {
     const f = fixture([epic('E1'), task('E1.1', 'E1')]);
     writeFileSync(join(f.cwd, 'README'), 'edited\n');

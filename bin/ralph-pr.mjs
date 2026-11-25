@@ -295,7 +295,14 @@ async function readyTasks() {
 }
 // Agents read code and run single test files, so a worktree borrows the main checkout's dependencies.
 function borrowModules(path) {
-  if (existsSync(join(root, 'node_modules')) && !existsSync(join(path, 'node_modules'))) symlinkSync(join(root, 'node_modules'), join(path, 'node_modules'));
+  if (!existsSync(join(root, 'node_modules')) || existsSync(join(path, 'node_modules'))) return;
+  symlinkSync(join(root, 'node_modules'), join(path, 'node_modules'));
+  // A `node_modules/` ignore line matches folders only, so `git add -A` in the worktree would commit the link.
+  const exclude = join(commonGit, 'info/exclude');
+  const lines = existsSync(exclude) ? readFileSync(exclude, 'utf8') : '';
+  if (/^node_modules$/m.test(lines)) return;
+  mkdirSync(dirname(exclude), { recursive: true });
+  appendFileSync(exclude, `${lines && !lines.endsWith('\n') ? '\n' : ''}node_modules\n`);
 }
 async function startWorker(task, row) {
   const path = join(trees, task.id);
