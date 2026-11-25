@@ -18,7 +18,9 @@ export const probes = {
 export async function probe(agent) {
   const [command, ...args] = probes[agent];
   // A failed run rejects with an error that holds its stdout and stderr too.
-  const reply = await promisify(execFile)(command, args, { cwd: '/tmp', encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 180000 }).catch(error => error);
+  const run = promisify(execFile)(command, args, { cwd: '/tmp', encoding: 'utf8', timeout: 180000 });
+  run.child.stdin.end(); // execFile always pipes stdin, and codex exec waits for EOF on a piped stdin
+  const reply = await run.catch(error => error);
   const ok = !(reply instanceof Error) && reply.stdout.toLowerCase().includes('pong');
   return { ok, until: ok ? undefined : retryAt(`${reply.stdout}\n${reply.stderr}`) };
 }
