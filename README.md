@@ -285,6 +285,12 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
   minutes so far and last 5 steps. At
   the bottom are the open PRs with their labels and CI state, then the
   supervisor log. A panel keeps its number while its agent runs.
+  - It opens waiting, after the start steps above (push, Beads export,
+    giving back a stopped run's claims): the header says
+    `waiting: press Enter to start`, so you can change settings with `s`
+    first. Until `Enter` there are no checks: no agent starts, no PR merges,
+    no task or label changes, and no PRs or ready tasks show yet. `q`
+    stops without starting.
   - A small terminal keeps everything readable. Header fields and long log
     lines wrap. A panel cuts its title before its agent and minutes. Panels
     lose steps and PRs lose lines before the newest 3 log lines leave the
@@ -292,7 +298,7 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
   - Colour marks state: workers cyan, reviewers magenta, the merger blue,
     errors and failures red, passed CI and merges green, running CI yellow. Older steps
     are dim, so the newest stands out. The header turns yellow while
-    stopping. `NO_COLOR` turns colour off.
+    waiting or stopping. `NO_COLOR` turns colour off.
   - `1`-`9` opens that agent full screen with all its steps; `↑`/`↓`
     scroll, `Esc` goes back.
   - `s` opens the settings: tabs Models (the agent lines' agent, model and
@@ -311,7 +317,7 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
   - The supervisor log also goes to `.ralph-tui/pr-logs/ralph-pr.log`, since
     the dashboard closes when the run ends.
 - Not in a terminal (stdout or stdin redirected, e.g. `nohup` or `> file`),
-  it prints a plain log instead. Each step is one line, prefixed with its task
+  it prints a plain log instead and starts at once. Each step is one line, prefixed with its task
   or `review-<PR>`. While busy, a status block prints every `poll`
   seconds: each running agent with its model, effort, context size,
   minutes so far and last step,

@@ -1,6 +1,6 @@
 // Live dashboard for ralph-afk --pr: one panel per running agent, or one agent full screen.
 // ralph-pr.mjs starts it only when stdin and stdout are a terminal and supplies the data.
-// s opens the settings view, which edits the agents file one line at a time.
+// s opens the settings view, which edits the agents file one line at a time. It opens waiting: Enter starts the run.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { DEFAULTS, edit, parseAgents } from './ralph-agents.mjs';
 
@@ -28,12 +28,12 @@ export function settingsRows(text, tab) {
 }
 const tone = text => /fail|could not|exited|needs a human|needs-human|not usable/i.test(text) ? '31' : /^Merged|passed/.test(text) ? '32' : '';
 
-// view: { header, stopping, jobs, prs, logs, focus, scroll, settings, now, color }; header is a list of fields;
+// view: { header, stopping, waiting, jobs, prs, logs, focus, scroll, settings, now, color }; header is a list of fields;
 // jobs carry slot, stage, Task, Title, PR, agent, model, effort, context, started, steps, file.
 // settings: { tab, row, col, buffer, note, text, file } while the settings view is open; buffer is the value being typed,
 // file the one a save writes.
 // Returns the screen as at most rows lines, each at most cols characters wide.
-export function render({ header, stopping, jobs, prs, logs, focus, scroll = 0, settings, now, color = true }, cols, rows) {
+export function render({ header, stopping, waiting, jobs, prs, logs, focus, scroll = 0, settings, now, color = true }, cols, rows) {
   // A line is a list of [text, SGR style] parts, cut to the terminal width before it is styled.
   const cut = (parts, room) => parts.map(([text, style]) => {
     const piece = clean(text).slice(0, Math.max(0, room));
@@ -99,8 +99,8 @@ export function render({ header, stopping, jobs, prs, logs, focus, scroll = 0, s
   } else {
     const time = new Date(now).toLocaleTimeString('sv');
     // Header fields that do not fit beside the clock go on more header lines.
-    const head = flow(['ralph-pr', ...header].map(field => [[field, '']]), [[' ', '']], [[' ', '']], [['  ·  ', '']], cols - time.length - 2)
-      .map((parts, i) => bar(parts.map(([text]) => text).join(''), i ? '' : `${time} `, stopping ? '7;33' : '7'));
+    const head = flow(['ralph-pr', ...(waiting ? ['waiting: press Enter to start'] : []), ...header].map(field => [[field, '']]), [[' ', '']], [[' ', '']], [['  ·  ', '']], cols - time.length - 2)
+      .map((parts, i) => bar(parts.map(([text]) => text).join(''), i ? '' : `${time} `, stopping || waiting ? '7;33' : '7'));
     // PRs flow onto as many lines as they need, but the newest 3 log lines and a line per panel stay on screen.
     const marks = text => text.replace(/^PR /, '').split(/(CI passed|CI failed|CI running|no CI yet|needs-human)/).map(piece => [piece, STATE[piece] ?? '']);
     const LOGS = 3;
@@ -127,24 +127,28 @@ export function render({ header, stopping, jobs, prs, logs, focus, scroll = 0, s
       return (text.match(new RegExp(`\\S.{0,${w - 1}}(?= |$)|\\S.{0,${w - 1}}`, 'g')) ?? ['']).map((piece, i) => [[i ? ' '.repeat(time.length) : time, '2'], [piece, tone(text)]]);
     }).slice(-n);
     lines = [...top, rule, ...prLines, ...wrapped.map((parts, i) => [[i ? '      ' : ' Log  ', '1'], ...parts]),
-      keys([['1-9', 'open agent'], ['s', 'settings'], ['q', 'stop']])];
+      keys([...(waiting ? [['Enter', 'start']] : []), ['1-9', 'open agent'], ['s', 'settings'], ['q', 'stop']])];
   }
   return lines.slice(0, rows).map(paint);
 }
 
 // state() returns { header, stopping, jobs, prs, logs }; interrupt runs on q or Ctrl+C (raw mode turns off SIGINT).
 // file() is the agents file in use; the settings view saves to own, a copy of it when they differ. saved runs after each save.
+// The returned started resolves on Enter: until then the run waits, so settings can change before any agent starts.
 export function startTui(state, interrupt, file, own, saved) {
   const { stdin, stdout } = process;
   let focus = null;
   let scroll = 0;
   let settings = null;
   let on = true;
+  let waiting = true;
+  let begin;
+  const started = new Promise(resolve => { begin = resolve; });
   const draw = () => {
     if (!on) return;
     const view = state();
     if (focus && !view.jobs.includes(focus)) { focus = null; scroll = 0; } // its agent finished
-    const lines = render({ ...view, focus, scroll, settings, now: Date.now(), color: !process.env.NO_COLOR }, stdout.columns, stdout.rows);
+    const lines = render({ ...view, focus, scroll, settings, waiting, now: Date.now(), color: !process.env.NO_COLOR }, stdout.columns, stdout.rows);
     // Clear each line before writing it: erasing after a full-width line would also erase its last character.
     stdout.write(`\x1b[H${lines.map(line => `\x1b[2K${line}`).join('\n')}${lines.length < stdout.rows ? '\n\x1b[J' : ''}`);
   };
@@ -189,6 +193,7 @@ export function startTui(state, interrupt, file, own, saved) {
       if (key === '\x03') interrupt();
       else if (settings) setting(key);
       else if (key === 'q') interrupt();
+      else if (key === '\r' && waiting) { waiting = false; begin(); }
       else if (key === 's') settings = { tab: 0, row: 0, col: 0, buffer: null, note: null, text: readFileSync(file(), 'utf8'), file: own };
       else if (job) { focus = job; scroll = 0; }
       else if (key === '\x1b') { focus = null; scroll = 0; }
@@ -218,5 +223,5 @@ export function startTui(state, interrupt, file, own, saved) {
   process.on('exit', stop);
   process.on('uncaughtException', crash);
   draw();
-  return { draw, stop };
+  return { draw, stop, started };
 }
