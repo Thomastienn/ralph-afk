@@ -17,8 +17,12 @@ test('a setting line beats its default, the first of two wins, and - is no effor
   assert.deepEqual(rows, [{ stage: 'worker', agent: 'codex', model: 'm', effort: null, line: 1 }, { stage: 'reviewer', agent: 'none', line: 3 }]);
 });
 
+test('a schedule may split a window at midnight', () => {
+  assert.equal(parseAgents('schedule|22-24=codex 00-06=codex,claude\n').settings.schedule, '22-24=codex 00-06=codex,claude');
+});
+
 test('a bad line is refused with its number', () => {
-  for (const line of ['workers|0', 'poll|0', 'wait|1.5', 'schedule|00-24=cursor', 'retries|3', 'worker|codex||-', 'merger|human']) {
+  for (const line of ['workers|0', 'poll|0', 'wait|1.5', 'schedule|00-24=cursor', 'schedule|22-06=codex', 'schedule|30-99=claude', 'schedule|07-07=claude', 'schedule|00-06=codex 08-25=claude', 'retries|3', 'worker|codex||-', 'merger|human']) {
     assert.throws(() => parseAgents(`# c\nworker|codex|m|-\n${line}`), /^Error: line 3: /, line);
   }
 });

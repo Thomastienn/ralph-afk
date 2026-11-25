@@ -128,7 +128,7 @@ test('a scheduled agent with no worker line never launches; a schedule typo is r
     const unknown = fixture();
     const refused = unknown.run({ RALPH_AGENTS: unknown.table(schedule) });
     assert.equal(refused.status, 1, schedule);
-    assert.match(refused.stderr, /agents-set line 1: schedule must be space-separated FROM-TO=agents windows, agents claude or codex/, schedule);
+    assert.match(refused.stderr, /agents-set line 1: schedule must be space-separated FROM-TO=agents windows/, schedule);
     assert.deepEqual(unknown.runs(), []);
   }
 });

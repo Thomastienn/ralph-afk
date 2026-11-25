@@ -236,7 +236,8 @@ For example, `schedule|00-07=codex 07-24=claude,codex` runs only Codex at
 night.
 
 - No agent runs outside every window.
-- Split windows that cross midnight: `22-24=codex 00-06=codex`.
+- Split windows that cross midnight: `22-24=codex 00-06=codex`. A window
+  needs FROM below TO and TO at most 24; any other is refused at start.
 - Read when a task starts; a running task is not interrupted at a boundary.
 - An agent with no `worker` line is skipped. An agent other than `claude` or
   `codex` is refused at start.

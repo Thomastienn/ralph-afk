@@ -8,11 +8,15 @@ import { pathToFileURL } from 'node:url';
 export const DEFAULTS = { workers: '3', reviewers: '2', tries: '3', 'slow-every': '5', schedule: '00-24=claude,codex', wait: '600', poll: '120' };
 const count = [/^[1-9][0-9]*$/, 'a whole number from 1'];
 const window = '[0-9]+-[0-9]+=(claude|codex)(,(claude|codex))*';
+const windows = new RegExp(`^${window}( +${window})*$`);
+// A window runs hours FROM to TO-1, so any other one would never match.
+const reachable = w => { const [from, to] = w.split('=')[0].split('-').map(Number); return from < to && to <= 24; };
 const CHECKS = {
   workers: count, reviewers: count, tries: count, 'slow-every': count,
   wait: [/^[0-9]+$/, 'whole seconds'],
   poll: [/^(?=.*[1-9])[0-9]*\.?[0-9]+$/, 'seconds above 0'],
-  schedule: [new RegExp(`^${window}( +${window})*$`), 'space-separated FROM-TO=agents windows, agents claude or codex'],
+  schedule: [{ test: value => windows.test(value) && value.split(/ +/).every(reachable) },
+    'space-separated FROM-TO=agents windows, FROM below TO and TO at most 24, agents claude or codex'],
 };
 const MODES = ['worker|human', 'reviewer|human', 'reviewer|none'];
 
