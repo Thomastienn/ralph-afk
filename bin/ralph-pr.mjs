@@ -116,6 +116,11 @@ async function pick(stage) {
   for (const row of table) if (row.stage === stage && scheduled().includes(row.agent) && await usable(row)) return row;
 }
 const down = agent => probed.set(agent, { ok: false, until: Date.now() + waitMs });
+// A run that ran out of usage is the agent's failure, not the task's: probe again so it does not count as a try.
+async function limited(job) {
+  if (probed.get(job.agent)?.ok) probed.delete(job.agent); // a cached ok predates this run's end
+  return !(await usable(job));
+}
 
 const commonGit = await run('git', ['rev-parse', '--path-format=absolute', '--git-common-dir']);
 function command(row, prompt, session, resuming) {
@@ -340,9 +345,10 @@ async function workerDone(job) {
   }
   if (job.fix) {
     log(`${job.Task}: ${job.agent} exited with ${job.code} before fixing the review; a fresh agent tries next.`);
-    if (Date.now() - job.started < 120000) down(job.agent);
     sessions[job.Task].id = null;
     saveSessions();
+    if (await limited(job)) return;
+    if (Date.now() - job.started < 120000) down(job.agent);
     return failed(job.Task, 'fixing the review');
   }
   if (task && labelled(task, 'needs-human')) {
@@ -350,9 +356,11 @@ async function workerDone(job) {
     return log(`${job.Task} needs a human; other work continues.`);
   }
   log(`${job.Task}: ${job.agent} exited with ${job.code} before the PR was in review; the task is ready again.`);
-  if (Date.now() - job.started < 120000) down(job.agent);
   // Count first: a hard stop between the two leaves a claim with a worktree, which the restart gives back.
-  await failed(job.Task, 'the worker');
+  if (!(await limited(job))) {
+    if (Date.now() - job.started < 120000) down(job.agent);
+    await failed(job.Task, 'the worker');
+  }
   await attempt('bd', ['unclaim', job.Task]);
 }
 
@@ -498,6 +506,7 @@ async function reviewDone(job) {
   if (labelled(task, 'needs-human')) return log(`PR ${job.PR} needs a human; skipping it until the label is gone.`);
   if (labelled(task, 'approved')) return log(`PR ${job.PR} approved; it merges once its CI passes.`);
   log(`PR ${job.PR}: ${job.agent} exited with ${job.code} without approving.`);
+  if (await limited(job)) return;
   if (Date.now() - job.started < 120000) down(job.agent);
   return failed(job.Task, 'the review');
 }
@@ -506,6 +515,7 @@ async function mergerDone(job) {
   if (!job.code && pr.mergeable !== 'CONFLICTING') return log(`PR ${job.PR}: merged ${base} into it; it merges once its CI passes.`);
   if (labelled(await show(job.Task) ?? {}, 'needs-human')) return log(`PR ${job.PR} needs a human; skipping it until the label is gone.`);
   log(`PR ${job.PR}: ${job.agent} exited with ${job.code}${pr.mergeable === 'CONFLICTING' ? ` and it still conflicts with ${base}` : ''}.`);
+  if (await limited(job)) return;
   if (Date.now() - job.started < 120000) down(job.agent);
   return failed(job.Task, `merging ${base}`);
 }

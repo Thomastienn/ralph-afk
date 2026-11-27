@@ -120,7 +120,7 @@ missing setting keeps its default; the first line of a setting wins.
 | --- | --- | --- |
 | `workers` | `3` | `--pr` workers at once, a whole number from 1. Ignored without `--pr` and with `worker|human`. |
 | `reviewers` | `2` | `--pr` reviewers at once, a whole number from 1. Ignored without `--pr`. |
-| `tries` | `3` | `--pr`: failed agent runs on one task or PR before it gets `needs-human`. |
+| `tries` | `3` | `--pr`: failed agent runs on one task or PR before it gets `needs-human`. A run whose agent then fails its usage probe does not count. |
 | `slow-every` | `5` | `--pr`: merges between runs of `slow-tests.yml`. |
 | `schedule` | `00-24=claude,codex` | Agents allowed per hour; see [Schedule](#schedule). |
 | `wait` | `600` | Whole seconds before re-probing an agent with no known reset. |

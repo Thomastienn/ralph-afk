@@ -93,6 +93,8 @@ prompt="\${@: -1}"
 if [[ $* == *'Reply with exactly: pong'* && $* != *'## This run'* ]]; then
   # FIXTURE_LIMITED: out of usage until another agent has run.
   [[ " $FIXTURE_LIMITED " != *" ${name} "* || -e "$FIX/agents" ]] || exit 1
+  # FIXTURE_LIMIT_MIDRUN: one probe sees the limit a worker hit, then it lifts.
+  [[ ! -e "$FIX/limited" ]] || { rm "$FIX/limited"; exit 1; }
   echo pong; exit
 fi
 task=$(sed -n 's/^Task: //p' <<< "$prompt")
@@ -134,6 +136,8 @@ if [[ -n $pr ]]; then
   rm "$FIX/reviewing/$pr"; exit
 fi
 [[ -z $FIXTURE_WORKER_SLEEP ]] || { echo $$ >> "$FIX/pids"; /usr/bin/sleep "$FIXTURE_WORKER_SLEEP"; }
+# FIXTURE_LIMIT_MIDRUN: these tasks' first worker runs out of usage mid-run.
+[[ " $FIXTURE_LIMIT_MIDRUN " != *" $task "* || -e "$FIX/limit-hit" ]] || { touch "$FIX/limit-hit" "$FIX/limited"; exit 1; }
 [[ " $FIXTURE_FAIL " != *" $task "* ]] || exit 1
 git log -1 --format="$task %s" >> "$FIX/bases"
 echo "$task" > "$task.txt" && git add "$task.txt" && git commit -qm "$task" && git push -q origin "$task"
@@ -371,6 +375,17 @@ describe('pr', { concurrency: 4 }, () => {
     assert.equal(f.claims().length, 1);
     assert.ok(f.issue('E1.1').labels.includes('needs-human'));
     assert.deepEqual(JSON.parse(readFileSync(join(f.cwd, '.ralph-tui/pr-logs/tries.json'), 'utf8')), {});
+  });
+
+  test('a worker that runs out of usage mid-run does not count as a try', async () => {
+    const f = fixture([epic('E1'), task('E1.1', 'E1')]);
+    mkdirSync(join(f.cwd, '.ralph-tui/pr-logs'));
+    writeFileSync(join(f.cwd, '.ralph-tui/pr-logs/tries.json'), JSON.stringify({ 'E1.1': 2 }));
+    const result = await f.run({ FIXTURE_LIMIT_MIDRUN: 'E1.1' });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /claude is not usable now/);
+    assert.ok(!f.issue('E1.1').labels.includes('needs-human'), result.stdout);
+    assert.equal(f.issue('E1.1').status, 'closed');
   });
 
   test('after one Ctrl+C it waits for the running agents without polling gh and bd in a loop', async () => {
