@@ -47,14 +47,16 @@ pushes to your branch and Beads updates are authorized.
    "task: <task> <title>"`, with a body that lists motivation, decision, what changed, each
    acceptance criterion with its evidence, tradeoffs or any notes, and the defaults you chose.
 7. **Wait for CI**: `gh pr checks <branch> --watch`. When a check is red, read
-   it (`gh run view <run> --log-failed`), fix, push and wait again, up to 3
-   fix rounds.
-8. **Hand over.** With every check green, run
+   it (`gh run view <run> --log-failed`), fix, push and wait again until every
+   check passes. Never merge or rebase onto the base: when
+   `gh pr view <branch> --json mergeable` says CONFLICTING, GitHub runs no CI,
+   so skip the wait and hand over; the merger resolves it.
+8. **Hand over.** With every check green, or the PR conflicting, run
    `bd update <task> --add-label in-review` and end. The task stays open: a
    reviewer approves the PR, then `ralph-afk` merges it and closes the task.
 
-You are done when the PR is open, every check is green and the task carries
-`in-review`, or when the task carries `needs-human` with a note.
+You are done when the PR is open, every check is green (or it conflicts) and
+the task carries `in-review`, or when the task carries `needs-human` with a note.
 
 ## Mockup
 
@@ -90,20 +92,22 @@ source of a structural difference.
    `<state>-<scheme>-mockup` and `<state>-<scheme>-app`. Write them without
    opening them, commit them, and list them in the PR body.
 5. A difference you cannot remove (data the app does not have, a behaviour
-   the mockup assumes) is an owner decision, never a default: escalate it,
-   naming the region, what the mockup shows, what the app can show, and the
-   options.
+   the mockup assumes) does not stop the task: build the closest the app can
+   show and list it under `Owner decisions:` in the PR body, naming the
+   region, what the mockup shows, what the app shows, and the options.
 
 ## Escalation
 
-`needs-human` parks the task until the owner answers, so use it only when no
-reasonable default exists: missing access or credentials, acceptance criteria
-that contradict each other, a product decision only the owner can make, or a
-difference from the task's mockup you cannot remove.
-Run `bd update <task> --add-label needs-human` and
-`bd note <task> "<the question, what you tried, the options>"`, then end.
-CI still red after 3 fix rounds escalates the same way, naming the failure.
-Everything else: choose a default, record it, and finish.
+`needs-human` parks the task until the owner answers, so use it only when the
+work cannot go on at all: missing access or credentials, or acceptance
+criteria that contradict each other. Then run
+`bd update <task> --add-label needs-human` and
+`bd note <task> "<the question, what you tried, the options>"`, and end.
+Everything else, product questions and mockup differences included: choose
+the option closest to the spec and the mockup, build it, list it in the PR
+body under `Owner decisions:` (the question, what you chose, the other
+options), and finish. The owner answers those after the merge. Red CI is never
+a reason to escalate: keep fixing until it is green.
 
 ## Boundaries
 

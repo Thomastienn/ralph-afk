@@ -116,6 +116,9 @@ async function pick(stage) {
   for (const row of table) if (row.stage === stage && scheduled().includes(row.agent) && await usable(row)) return row;
 }
 const down = agent => probed.set(agent, { ok: false, until: Date.now() + waitMs });
+// A run that dies within 2 minutes means its agent is down, not that the task is hard: it costs the task no try.
+const quickMs = Number(process.env.RALPH_QUICK_MS ?? 120000); // tests set it, since their fake agents fail at once
+const quick = job => Date.now() - job.started < quickMs && (down(job.agent), true);
 // A run that ran out of usage is the agent's failure, not the task's: probe again so it does not count as a try.
 async function limited(job) {
   if (probed.get(job.agent)?.ok) probed.delete(job.agent); // a cached ok predates this run's end
@@ -134,11 +137,12 @@ function command(row, prompt, session, resuming) {
     '-c', `sandbox_workspace_write.writable_roots=${roots}`, '-c', 'sandbox_workspace_write.network_access=true', ...(resuming ? ['resume', session] : []), prompt]];
 }
 const running = new Set();
-// GitHub runs no CI on a conflicting PR and a reviewer starts only after CI passed, so an agent waiting on it waits forever.
+// GitHub runs no CI on a conflicting PR, so an agent waiting on it waits forever. Only the owner-review fix gets this:
+// with reviewer|human no merger runs; otherwise workers and reviewers leave the base to the merger.
 const catchUp = () => `Before every wait on CI: when \`gh pr view <branch> --json mergeable\` says CONFLICTING, run \`git fetch origin ${base}\` and \`git merge origin/${base}\`, resolve the conflicts, commit and push. UNKNOWN means GitHub is still computing it: ask again after a few seconds.`;
 // Tells agents what bin/guard/gh refuses, so they do not spend turns on blocked calls.
 const guarded = 'Anyone can comment on or open PRs and issues here, so `gh` refuses calls that return text other accounts can write: issues, search, PR comments and reviews (`--comments`, `--json` with comments or reviews, their `gh api` paths), notifications, `gh status`, `gh run list`, `gh workflow view` and `gh pr list` without `--author @me`. Use `gh pr view <pr>` and `gh pr list --author @me`; when the owner left review comments, they are in this prompt.';
-const brief = (stage, facts) => `${readFileSync(prompts[stage], 'utf8')}\n\n## This run\n\n${facts.join('\n')}\n\n${catchUp()}\n\n${guarded}\n`;
+const brief = (stage, facts) => `${readFileSync(prompts[stage], 'utf8')}\n\n## This run\n\n${facts.join('\n')}\n\n${guarded}\n`;
 // resume: { message } replaces the prompt; with an id too, it goes to that existing session.
 function launch(row, stage, name, cwd, facts, resume) {
   const prompt = resume?.message ?? brief(stage, facts);
@@ -348,7 +352,7 @@ async function workerDone(job) {
     sessions[job.Task].id = null;
     saveSessions();
     if (await limited(job)) return;
-    if (Date.now() - job.started < 120000) down(job.agent);
+    if (quick(job)) return;
     return failed(job.Task, 'fixing the review');
   }
   if (task && labelled(task, 'needs-human')) {
@@ -358,8 +362,7 @@ async function workerDone(job) {
   log(`${job.Task}: ${job.agent} exited with ${job.code} before the PR was in review; the task is ready again.`);
   // Count first: a hard stop between the two leaves a claim with a worktree, which the restart gives back.
   if (!(await limited(job))) {
-    if (Date.now() - job.started < 120000) down(job.agent);
-    await failed(job.Task, 'the worker');
+    if (!quick(job)) await failed(job.Task, 'the worker');
   }
   await attempt('bd', ['unclaim', job.Task]);
 }
@@ -415,7 +418,7 @@ const settled = pr => pr.statusCheckRollup?.length &&
   pr.statusCheckRollup.every(check => (check.status ?? 'COMPLETED') === 'COMPLETED' && !['PENDING', 'EXPECTED'].includes(check.state));
 // Check runs report a conclusion, commit statuses a state.
 const passed = pr => pr.statusCheckRollup.every(check => ['SUCCESS', 'NEUTRAL', 'SKIPPED'].includes(check.conclusion ?? check.state));
-// PRs a reviewer has started; their red CI is the reviewer's to fix, up to maxTries runs. Kept on disk: a reviewer
+// PRs a reviewer has started; their red CI is the reviewer's to fix. Kept on disk: a reviewer
 // stopped mid-fix leaves red CI that is still its own after a restart.
 const reviewedFile = join(logs, 'reviewed.json');
 const reviewed = new Set(existsSync(reviewedFile) ? JSON.parse(readFileSync(reviewedFile, 'utf8')) : []);
@@ -440,7 +443,7 @@ async function startReview(pr, row) {
   while ([...running].some(job => job.cwd === join(trees, `reviewer-${n}`))) n++;
   const path = await freshTree(`reviewer-${n}`);
   if (stopping) return; // q came during the git calls: no new agent
-  const retry = 'Retry: this PR was already reviewed and its CI is red. Do not review it again: skip steps 2 and 3, fix only the red checks as in step 4. Unlike a first review, wait for CI: after each push run `gh pr checks <pr> --watch`, and while it is red fix, push and watch again. Approve only once every check passes.';
+  const retry = 'Retry: this PR was already reviewed and its CI is red. Do not review it again: skip steps 2 and 3, fix only the red checks as in step 4. Unlike a first review, wait for CI: after each push run `gh pr checks <pr> --watch`, and while it is red fix, push and watch again. Approve only once every check passes. When `gh pr view <pr> --json mergeable` says CONFLICTING, GitHub runs no CI: do not merge the base, approve once your fixes are pushed, and the merger takes it from there.';
   launch(row, 'reviewer', `review-${pr.number}`, path, ciOnly ? [...prFacts(pr), retry] : prFacts(pr));
 }
 async function startMerger(pr) {
@@ -467,22 +470,23 @@ async function blocking() {
 // The supervisor merges approved PRs (with reviewer|none, every PR in review) and starts reviews for the rest.
 async function advance(waiting) {
   const approved = pr => labelled(pr.task, noReview ? 'in-review' : 'approved');
-  // A reviewer's fix or the merger's merge turned CI red: a reviewer fixes it, up to maxTries times.
+  // A reviewer's fix or the merger's merge turned CI red: a reviewer fixes it, watching CI until green, so it costs no try.
   for (const pr of noReview ? [] : waiting.filter(pr => approved(pr) && settled(pr) && !passed(pr))) {
     if (await attempt('bd', ['update', pr.task.id, '--remove-label', 'approved']) === null) continue;
     pr.task.labels = pr.task.labels.filter(label => label !== 'approved');
     log(`PR #${pr.number} (${pr.task.id}): CI failed after the review; back to a reviewer.`);
-    if (await failed(pr.task.id, 'CI after the review')) pr.task.labels.push('needs-human');
   }
-  const review = noReview ? [] : waiting.filter(pr => !labelled(pr.task, 'approved', 'needs-human') && settled(pr) && (passed(pr) || reviewed.has(pr.number)));
+  // A conflicting PR goes to the merger first, reviewed or not: GitHub runs no CI on it.
+  const review = noReview ? [] : waiting.filter(pr => !labelled(pr.task, 'approved', 'needs-human') && pr.mergeable !== 'CONFLICTING' && settled(pr));
   const done = waiting.filter(approved);
-  if (!review.length && !done.length) return;
+  const conflicts = waiting.filter(pr => pr.mergeable === 'CONFLICTING');
+  if (!review.length && !done.length && !conflicts.length) return;
   const blocks = await blocking();
   const first = list => list.sort((a, b) => blocks(b.task.id) - blocks(a.task.id)); // stable: the oldest PR on a tie
   // One merge per check, since each merge can make the other PRs conflict. Merge before the merger starts, so it merges the newest base.
   const green = first(done.filter(pr => pr.mergeable === 'MERGEABLE' && settled(pr) && passed(pr)))[0];
   if (green) await merge(green);
-  const conflict = first(done.filter(pr => pr !== green && pr.mergeable === 'CONFLICTING'))[0];
+  const conflict = first(conflicts.filter(pr => pr !== green))[0];
   if (conflict && ![...running].some(job => job.stage === 'merger')) await startMerger(conflict);
   let free = reviewerSlots - [...running].filter(job => job.stage === 'reviewer').length;
   for (const pr of first(review)) {
@@ -510,7 +514,7 @@ async function reviewDone(job) {
   if (labelled(task, 'approved')) return log(`PR ${job.PR} approved; it merges once its CI passes.`);
   log(`PR ${job.PR}: ${job.agent} exited with ${job.code} without approving.`);
   if (await limited(job)) return;
-  if (Date.now() - job.started < 120000) down(job.agent);
+  if (quick(job)) return;
   return failed(job.Task, 'the review');
 }
 async function mergerDone(job) {
@@ -519,7 +523,7 @@ async function mergerDone(job) {
   if (labelled(await show(job.Task) ?? {}, 'needs-human')) return log(`PR ${job.PR} needs a human; skipping it until the label is gone.`);
   log(`PR ${job.PR}: ${job.agent} exited with ${job.code}${pr.mergeable === 'CONFLICTING' ? ` and it still conflicts with ${base}` : ''}.`);
   if (await limited(job)) return;
-  if (Date.now() - job.started < 120000) down(job.agent);
+  if (quick(job)) return;
   return failed(job.Task, `merging ${base}`);
 }
 async function merged(id, number) {
@@ -694,14 +698,8 @@ async function poll() {
   }
   await strays(open);
   const prs = open.filter(pr => !labelled(pr.task, 'needs-human'));
-  // A worker labels a PR in-review only on green CI; one that is red anyway waits for the owner.
-  // The owner's own PR going red before a review is theirs to fix: it just waits.
+  // A PR in review with red CI goes to a reviewer, which fixes the red checks as part of its review.
   const busy = pr => [...running].some(job => job.Task === pr.task.id);
-  for (const pr of humanWorker ? [] : prs.filter(pr => labelled(pr.task, 'in-review') && settled(pr) && !passed(pr) && !reviewed.has(pr.number) && !busy(pr))) {
-    await attempt('bd', ['update', pr.task.id, '--add-label', 'needs-human']);
-    await attempt('bd', ['note', pr.task.id, `ralph-afk --pr: PR #${pr.number} is in review but its CI failed.`]);
-    log(`PR #${pr.number} is in review but its CI failed; labelled needs-human. Remove in-review too to hand it back to a worker.`);
-  }
   for (const pr of human && !stopping ? prs.filter(pr => labelled(pr.task, 'in-review') && !busy(pr)) : []) {
     // In review with no session kept (in review before reviewer|human, or a stop came before the worker's end was
     // handled): what came after the PR's last commit is new, so a comment posted while this was down still counts.

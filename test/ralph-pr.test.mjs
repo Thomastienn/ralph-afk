@@ -184,7 +184,7 @@ function fixture(issues) {
     return file;
   };
   const options = env => ({
-    cwd, env: { ...process.env, ...identity, FIX: fix, PATH: `${fix}/bin:${process.env.PATH}`, CLAUDE_CONFIG_DIR: join(fix, 'claude'), CODEX_HOME: join(fix, 'codex'), RALPH_AGENTS: table(), ...env },
+    cwd, env: { ...process.env, ...identity, FIX: fix, PATH: `${fix}/bin:${process.env.PATH}`, CLAUDE_CONFIG_DIR: join(fix, 'claude'), CODEX_HOME: join(fix, 'codex'), RALPH_AGENTS: table(), RALPH_QUICK_MS: '0', ...env },
   });
   // --pr runs until Ctrl+C: send it once stop(stdout so far) holds, by default when it reports being out of work.
   const run = (env = {}, args = [], stop = out => /Out of work/.test(out), signal = 'SIGINT') => new Promise(resolve => {
@@ -213,10 +213,10 @@ describe('pr', { concurrency: 4 }, () => {
     assert.deepEqual(f.claims(), ['update E1.1 --claim', 'update E1.2 --claim', 'update E2.1 --claim']);
     assert.deepEqual(f.read('merges').sort(), ['1', '2', '3']);
     assert.ok(f.read('concurrent').every(n => Number(n) <= 2), f.read('concurrent').join(' '));
-    // Every worker and reviewer is told to merge the base into a conflicting PR, whatever the project's prompts say.
+    // No worker or reviewer is told to merge the base: that is the merger's job.
     const prompts = readFileSync(join(f.fix, 'prompts'), 'utf8').split(/^(?=# (?:Worker|Reviewer) prompt$)/m);
     assert.equal(prompts.length, 6, prompts.join('\n---\n'));
-    for (const prompt of prompts) assert.match(prompt, /says CONFLICTING, run `git fetch origin master` and `git merge origin\/master`/);
+    for (const prompt of prompts) assert.doesNotMatch(prompt, /git merge origin\/master/);
     for (const prompt of prompts) assert.match(prompt, /`gh` refuses calls that return text other accounts can write/);
     for (const id of ['E1.1', 'E1.2', 'E2.1']) {
       assert.equal(f.issue(id).status, 'closed', id);
@@ -377,6 +377,16 @@ describe('pr', { concurrency: 4 }, () => {
     assert.deepEqual(JSON.parse(readFileSync(join(f.cwd, '.ralph-tui/pr-logs/tries.json'), 'utf8')), {});
   });
 
+  test('a worker that dies within 2 minutes marks its agent down and does not count as a try', async () => {
+    const f = fixture([epic('E1'), task('E1.1', 'E1')]);
+    mkdirSync(join(f.cwd, '.ralph-tui/pr-logs'));
+    writeFileSync(join(f.cwd, '.ralph-tui/pr-logs/tries.json'), JSON.stringify({ 'E1.1': 2 }));
+    const result = await f.run({ FIXTURE_FAIL: 'E1.1', RALPH_QUICK_MS: '120000' }, [], out => /before the PR was in review/.test(out));
+    assert.match(result.stdout, /E1\.1: claude exited with 1 before the PR was in review/);
+    assert.ok(!f.issue('E1.1').labels.includes('needs-human'), result.stdout);
+    assert.deepEqual(JSON.parse(readFileSync(join(f.cwd, '.ralph-tui/pr-logs/tries.json'), 'utf8')), { 'E1.1': 2 });
+  });
+
   test('a worker that runs out of usage mid-run does not count as a try', async () => {
     const f = fixture([epic('E1'), task('E1.1', 'E1')]);
     mkdirSync(join(f.cwd, '.ralph-tui/pr-logs'));
@@ -467,16 +477,23 @@ describe('pr', { concurrency: 4 }, () => {
     assert.equal(f.issue('E1.1').status, 'closed');
   });
 
-  test('the reviewer takes only PRs whose CI passed; a red PR in review gets needs-human', async () => {
+  test('a red PR in review goes to a reviewer, which fixes it, and merges without needs-human', async () => {
     const f = fixture([epic('E1'), task('E1.1', 'E1'), task('E1.2', 'E1')]);
     const result = await f.run({ FIXTURE_RED: 'E1.1' });
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.equal(f.read('merges').length, 1);
-    assert.equal(f.issue('E1.2').status, 'closed');
-    assert.ok(f.issue('E1.1').labels.includes('needs-human'));
-    assert.notEqual(f.issue('E1.1').status, 'closed');
-    assert.deepEqual(f.read('agents').filter(line => /^claude E1\.1 .*--model opus/.test(line)), []);
-    assert.match(result.stdout, /is in review but its CI failed; labelled needs-human/);
+    assert.equal(f.read('merges').length, 2);
+    for (const id of ['E1.1', 'E1.2']) assert.equal(f.issue(id).status, 'closed', id);
+    assert.ok(!f.issue('E1.1').labels.includes('needs-human'));
+    assert.equal(f.read('agents').filter(line => /^claude E1\.1 .*--model opus/.test(line)).length, 1);
+  });
+
+  test('a conflicting PR in review gets the merger before any review', async () => {
+    const f = fixture([epic('E1'), task('E1.1', 'E1')]);
+    const result = await f.run({ FIXTURE_CONFLICT: 'E1.1' });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.deepEqual(f.read('merger'), ['1']);
+    assert.match(result.stdout, /PR #1 \(E1\.1\) conflicts with master; the merger merges master into it\.\n(.*\n)*.*Started .* as reviewer for review-1/);
+    assert.equal(f.issue('E1.1').status, 'closed');
   });
 
   test('an approved PR whose CI goes red goes back to a reviewer that only fixes CI, and merges once green', async () => {
@@ -630,11 +647,11 @@ describe('pr', { concurrency: 4 }, () => {
     for (const id of ['E1.1', 'E1.2']) assert.equal(f.issue(id).status, 'closed', id);
   });
 
-  test('2 reviewers run at once; a conflicting approved PR gets the merger agent, then merges', async () => {
+  test('2 reviewers run at once; a conflicting PR gets the merger agent, then merges', async () => {
     const review = { status: 'in_progress', labels: ['in-review'] };
-    const f = fixture([epic('E1'), task('E1.1', 'E1', review), task('E1.2', 'E1', review)]);
+    const f = fixture([epic('E1'), task('E1.1', 'E1', review), task('E1.2', 'E1', review), task('E1.3', 'E1', review)]);
     const pr = (number, id, mergeable) => ({ number, headRefName: id, title: id, state: 'OPEN', mergeable, author: { login: 'owner' }, reviews: [], comments: [], statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }] });
-    writeFileSync(join(f.fix, 'prs.json'), JSON.stringify([pr(1, 'E1.1', 'CONFLICTING'), pr(2, 'E1.2', 'MERGEABLE')]));
+    writeFileSync(join(f.fix, 'prs.json'), JSON.stringify([pr(1, 'E1.1', 'CONFLICTING'), pr(2, 'E1.2', 'MERGEABLE'), pr(3, 'E1.3', 'MERGEABLE')]));
     const result = await f.run();
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.ok(f.read('concurrent').includes('2'), f.read('concurrent').join(' '));
@@ -642,8 +659,8 @@ describe('pr', { concurrency: 4 }, () => {
     assert.deepEqual(f.read('merger'), ['1']);
     // The merger line of agents.example, not a worker or reviewer line.
     assert.equal(f.read('agents').filter(line => / --model sonnet --effort medium /.test(line)).length, 1, f.read('agents').join('\n'));
-    assert.deepEqual(f.read('merges'), ['2', '1']);
-    for (const id of ['E1.1', 'E1.2']) assert.equal(f.issue(id).status, 'closed', id);
+    assert.deepEqual(f.read('merges').sort(), ['1', '2', '3']);
+    for (const id of ['E1.1', 'E1.2', 'E1.3']) assert.equal(f.issue(id).status, 'closed', id);
   });
 
   test('worker|human with reviewer|human is refused', async () => {

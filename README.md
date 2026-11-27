@@ -120,7 +120,7 @@ missing setting keeps its default; the first line of a setting wins.
 | --- | --- | --- |
 | `workers` | `3` | `--pr` workers at once, a whole number from 1. Ignored without `--pr` and with `worker|human`. |
 | `reviewers` | `2` | `--pr` reviewers at once, a whole number from 1. Ignored without `--pr`. |
-| `tries` | `3` | `--pr`: failed agent runs on one task or PR before it gets `needs-human`. A run whose agent then fails its usage probe does not count. |
+| `tries` | `3` | `--pr`: failed agent runs on one task or PR before it gets `needs-human`. A run whose agent then fails its usage probe, or that dies within 2 minutes (its agent counts as down), does not count. |
 | `slow-every` | `5` | `--pr`: merges between runs of `slow-tests.yml`. |
 | `schedule` | `00-24=claude,codex` | Agents allowed per hour; see [Schedule](#schedule). |
 | `wait` | `600` | Whole seconds before re-probing an agent with no known reset. |
@@ -261,16 +261,17 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
 - The supervisor squash-merges an approved PR once its CI passes, with the
   subject `task: <task> <title>`, one PR per check in the same order: each
   merge can make the others conflict. No agent runs for this.
-- An approved PR that conflicts with the base gets the merger agent, one at a
-  time. It merges `origin/<base>` into the PR, resolves the conflicts from
-  both sides' task descriptions (`prompts/pr-merger.md`), runs the tests for
-  the conflicted code, pushes and ends. The PR merges once its CI passes.
+- A PR in review that conflicts with the base, approved or not, gets the
+  merger agent, one at a time, before any review. It merges `origin/<base>`
+  into the PR, resolves the conflicts from both sides' task descriptions
+  (`prompts/pr-merger.md`), runs the tests for the conflicted code and pushes.
+  Then it watches CI and fixes red checks until every check passes. Workers
+  and reviewers never merge the base.
 - An approved PR whose CI goes red (after a reviewer's fix or the merger's
   merge) loses `approved` and goes back to a reviewer, which only fixes the
   red checks, without reviewing again. Unlike a first reviewer, it watches CI
   (`gh pr checks --watch`) and keeps fixing until every check passes, then
-  approves. After `tries` times (default 3) the task
-  gets `needs-human`.
+  approves. Red CI after a review costs no try.
 
 - At start, the local default branch is pushed to `origin` so workers branch
   from your latest planning commits. A changed `.beads/issues.jsonl` is
@@ -350,9 +351,9 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
   re-import the export, so with them the next review started up to a minute
   after a merge. Agents' own commits and pushes still run every hook.
 - Every `slow-every` merges (default 5), `slow-tests.yml` is dispatched. A failure files a fix task.
-- Every agent prompt ends with a catch-up rule: when the PR
-  conflicts with the base, merge `origin/<base>` and push before waiting on CI.
-  GitHub runs no CI on a conflicting PR, so without it the agent waits forever.
+- GitHub runs no CI on a conflicting PR, so a worker whose PR conflicts hands
+  it over without waiting, and the merger resolves it. Only the fix for your
+  own review (`reviewer|human`, where no merger runs) merges the base itself.
 - Only your own PRs and comments reach agents. `--pr` lists only PRs opened by
   the `gh` login, so a stranger's PR from a branch named after a task is never
   reviewed or merged. Agents run with `bin/guard/gh` first on `PATH`, which
@@ -360,10 +361,9 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
   search, comments, reviews, notifications, `gh status`, `gh run list`,
   `gh workflow view` and `gh pr list` without `--author @me`. Every prompt says so, and a fixing
   worker gets your comments in its prompt instead.
-- A PR labelled `in-review` whose CI failed before any review gets
-  `needs-human`, not a reviewer. To hand it back to a worker, remove both
-  labels. Once a reviewer has started a PR, red CI goes back to a reviewer,
-  up to 3 runs, also after a restart (`.ralph-tui/pr-logs/reviewed.json`).
+- A PR labelled `in-review` whose CI is red goes to a reviewer, which fixes
+  the red checks as part of its review (`.ralph-tui/pr-logs/reviewed.json`
+  remembers reviewed PRs across a restart).
 - A task or PR whose agent fails `tries` times (default 3) gets `needs-human`. Other work
   continues. These items are listed when it runs out of work and at the end.
   Failure counts survive a restart (`.ralph-tui/pr-logs/tries.json`) and reset
@@ -393,8 +393,9 @@ project; copy the built-in one there to start.
   skill's report as the PR comment, then fix and approve. The checklist adds
   only project checks the skill does not make. A project's own reviewer prompt that still merges keeps working: the
   merged PR's task closes as after any merge.
-- The merger prompt merges the base into one approved PR and resolves the
-  conflicts so both tasks' intent survives; it does not review again.
+- The merger prompt merges the base into one conflicting PR, resolves the
+  conflicts so both tasks' intent survives, then watches CI and fixes it until
+  green; it does not review.
 
 ### You as the worker
 
@@ -415,7 +416,7 @@ worker prompt is not used:
   branches from it.
 - The dashboard header says `worker you`.
 - The merger uses the `merger` lines; with `worker|human` and none, a
-  conflicting approved PR waits, so add one.
+  conflicting PR waits, so add one.
 
 ### You as the reviewer
 
@@ -441,8 +442,7 @@ With a `reviewer|human` line in the agents file, no reviewer agent runs:
   you drafted it.
 - When the worker's agent cannot run now (limit, schedule) or its session
   failed to resume, a fresh worker gets the task prompt plus your comments.
-- A fix that exits with an error counts as a failed run, as for workers. A fix
-  that leaves CI red gets `needs-human`.
+- A fix that exits with an error counts as a failed run, as for workers.
 - Sessions are kept in `.ralph-tui/pr-logs/sessions.json`, so a restart still
   resumes them. A PR in review with no kept session (in review before you
   switched to `reviewer|human`, or the run stopped before its worker's end was
@@ -457,9 +457,8 @@ reviewer prompt is not used:
 2. The supervisor squash-merges it with the subject `task: <task> <title>`.
    It merges one PR per check, in the reviewer's order (the PR that unblocks
    the most tasks first), since each merge can make the others conflict.
-3. A PR that conflicts with the base gets the merger agent, as an approved
-   PR does without `reviewer|none`. Once its merge is pushed and CI passes,
-   the PR merges.
+3. A PR that conflicts with the base gets the merger agent, as without
+   `reviewer|none`. Once its merge is pushed and CI passes, the PR merges.
 
 - A merge that fails for another reason (e.g. branch protection) counts as a
   failed run; after `tries` (default 3) the task gets `needs-human`.
@@ -494,8 +493,9 @@ in Claude Code (they write only docs and tickets), then let the runners build.
    Workers match the mockup's structure exactly (layout, elements, copy,
    sizes, spacing) in the app's theme colours, compare computed styles as
    text first, prove it with one screenshot pair per state in the default
-   colour scheme under `docs/verification/<issue-id>/`, and escalate any
-   difference they cannot remove; reviewers check the pairs.
+   colour scheme under `docs/verification/<issue-id>/`, and list any
+   difference they cannot remove under `Owner decisions:` in the PR body
+   instead of stopping; reviewers check the pairs.
 4. **Ticket:** `/to-tickets` makes one Beads epic per feature, a child task per
    step, dependencies for order. Size each task for one Ralph run (one
    session, up to about 200k tokens); merge tiny tasks, split big ones.
@@ -504,7 +504,7 @@ in Claude Code (they write only docs and tickets), then let the runners build.
 
    ```bash
    bd list --status blocked          # external blocker, noted in the task
-   bd list --label needs-human       # --pr: tasks or PRs that failed 3 times
+   bd list --label needs-human       # --pr: tasks or PRs that failed 3 times or need access
    cat .ralph-tui/reports/takeover-*/progress.md .ralph-tui/progress.md  # what each task did
    ```
 

@@ -1,8 +1,9 @@
 # PR merger
 
-You merge the base branch into one approved pull request that conflicts with
-it, so `ralph-afk --pr` can squash-merge it. A reviewer has already reviewed
-the PR: do not review it again or change anything the conflicts do not need.
+You merge the base branch into one pull request in review that conflicts with
+it, so its CI can run and `ralph-afk --pr` can squash-merge it. Reviewing is a
+reviewer's job: do not review the PR or change anything the conflicts and the
+red checks do not need.
 "This run" at the end names the PR, its task, branch and base. Merging the
 base into the PR branch and pushing it are authorized. The branch is checked
 out in the worker's worktree, so you work on a detached HEAD.
@@ -22,12 +23,15 @@ out in the worker's worktree, so you work on a detached HEAD.
    undoing it. Run the tests for the conflicted code, and the project's
    formatter on the files you changed, using the commands its docs name; CI
    runs the full suite. Commit the merge.
-5. **Push**: `git push origin HEAD:<branch>`, then end. Do not wait for CI and
-   do not merge the PR: `ralph-afk` merges it once CI passes, and a reviewer
-   gets it again when CI goes red.
+5. **Push**: `git push origin HEAD:<branch>`.
+6. **Watch CI**: `gh pr checks <pr> --watch`. While a check is red, read it
+   (`gh run view <run> --log-failed`), fix, push and watch again. When the base
+   moved on and the PR conflicts again, go back to step 2. End once every check
+   passes. Do not merge the PR: `ralph-afk` merges it once it is approved and
+   green.
 
-You are done when the merge is pushed, or when the task carries `needs-human`
-with a note and the PR has a comment saying why.
+You are done when the merge is pushed and every check passes, or when the task
+carries `needs-human` with a note and the PR has a comment saying why.
 
 ## Escalation
 
