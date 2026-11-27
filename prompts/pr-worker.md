@@ -9,7 +9,9 @@ pushes to your branch and Beads updates are authorized.
 
 1. **Read.** `bd show <task> --json` gives the description, acceptance
    criteria and notes. Read `AGENTS.md` (or `CLAUDE.md`) and the docs it links
-   for the areas you touch. A `Mockup:` line in the description names the
+   for the areas you touch. Read code narrowly: find it with `grep`, then read
+   only the line ranges you need, never whole folders or long files. A
+   `Mockup:` line in the description names the
    design whose structure to match exactly (see Mockup below). When `gh pr view <branch>` finds a PR, you are
    resuming: read the PR, its checks and the task notes, and continue from
    there.
@@ -19,7 +21,8 @@ pushes to your branch and Beads updates are authorized.
    breaks gets a test at the cheapest level, committed with the code: extend
    the existing test of that behaviour before adding a file, and follow the
    project's testing docs. Refactors, constants, copy, config and docs need no
-   new test; when a change makes a test obsolete, delete or rewrite it in the
+   new test, nor does the look a mockup pair proves (layout, sizes,
+   colours); when a change makes a test obsolete, delete or rewrite it in the
    same commit. A criterion no test can prove gets cited from the code in the
    PR body instead.
 3. **Check cheaply.** The owner's machine also runs the other workers, so keep
@@ -71,18 +74,21 @@ source of a structural difference.
    full build each round,
    over seeded data shaped like the mockup's (same number of items, every
    drawn state filled). Capture the mockup and the app with a headless
-   browser at 1440x900, in each colour scheme the app has, the same state in
-   each pair; add a narrow size when the mockup draws one.
-3. **Compare** region by region and fix every structural difference and
-   every colour in the wrong role. Try a CSS change live in the page first,
-   then write it to the file. Each image costs context, so keep the loop
-   lean: check sizes, spacing and fonts as text first (computed styles),
-   screenshot only the region you are fixing, and iterate in one scheme. Take
-   the full-page pairs in every scheme once, at the end, and stop when each
-   final pair matches side by side.
-4. **Record** the final pairs under `docs/verification/<task>/` (or where the
-   project's docs say), named `<state>-<scheme>-mockup` and
-   `<state>-<scheme>-app`, commit them, and list them in the PR body.
+   browser at 1440x900 in the app's default colour scheme, the same state in
+   each pair; add a narrow size when the mockup draws one. Check any other
+   scheme as text only: its computed colours use that scheme's tokens of the
+   same roles.
+3. **Compare as text first.** Read sizes, spacing, fonts and colours of both
+   pages as computed styles and bounding boxes, and fix every structural
+   difference and every colour in the wrong role. Try a CSS change live in
+   the page first, then write it to the file. Images cost a lot of context:
+   open one only for a region the numbers cannot settle, screenshot only that
+   region, never open a full-page capture, and open at most 6 images in the
+   whole task. Stop when the computed values match.
+4. **Record** one full-page pair per drawn state, default scheme only, under
+   `docs/verification/<task>/` (or where the project's docs say), named
+   `<state>-<scheme>-mockup` and `<state>-<scheme>-app`. Write them without
+   opening them, commit them, and list them in the PR body.
 5. A difference you cannot remove (data the app does not have, a behaviour
    the mockup assumes) is an owner decision, never a default: escalate it,
    naming the region, what the mockup shows, what the app can show, and the

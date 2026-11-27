@@ -489,8 +489,9 @@ in Claude Code (they write only docs and tickets), then let the runners build.
    `docs/mockups/<issue-id>.html` or `.png`, label the ticket `new-ui`, add a
    `Mockup:` line to its description. Tweaks to the existing look need none.
    Workers match the mockup's structure exactly (layout, elements, copy,
-   sizes, spacing) in the app's theme colours, prove it with paired
-   screenshots under `docs/verification/<issue-id>/`, and escalate any
+   sizes, spacing) in the app's theme colours, compare computed styles as
+   text first, prove it with one screenshot pair per state in the default
+   colour scheme under `docs/verification/<issue-id>/`, and escalate any
    difference they cannot remove; reviewers check the pairs.
 4. **Ticket:** `/to-tickets` makes one Beads epic per feature, a child task per
    step, dependencies for order. Size each task for one Ralph run (one
