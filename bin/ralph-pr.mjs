@@ -440,7 +440,7 @@ async function startReview(pr, row) {
   while ([...running].some(job => job.cwd === join(trees, `reviewer-${n}`))) n++;
   const path = await freshTree(`reviewer-${n}`);
   if (stopping) return; // q came during the git calls: no new agent
-  const retry = 'Retry: this PR was already reviewed and its CI is red. Do not review it again: skip steps 2 and 3, fix only the red checks as in step 4, then approve.';
+  const retry = 'Retry: this PR was already reviewed and its CI is red. Do not review it again: skip steps 2 and 3, fix only the red checks as in step 4. Unlike a first review, wait for CI: after each push run `gh pr checks <pr> --watch`, and while it is red fix, push and watch again. Approve only once every check passes.';
   launch(row, 'reviewer', `review-${pr.number}`, path, ciOnly ? [...prFacts(pr), retry] : prFacts(pr));
 }
 async function startMerger(pr) {

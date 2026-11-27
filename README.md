@@ -267,7 +267,9 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
   the conflicted code, pushes and ends. The PR merges once its CI passes.
 - An approved PR whose CI goes red (after a reviewer's fix or the merger's
   merge) loses `approved` and goes back to a reviewer, which only fixes the
-  red checks and approves, without reviewing again. After `tries` times (default 3) the task
+  red checks, without reviewing again. Unlike a first reviewer, it watches CI
+  (`gh pr checks --watch`) and keeps fixing until every check passes, then
+  approves. After `tries` times (default 3) the task
   gets `needs-human`.
 
 - At start, the local default branch is pushed to `origin` so workers branch
