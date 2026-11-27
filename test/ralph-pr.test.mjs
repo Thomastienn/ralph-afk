@@ -479,7 +479,7 @@ describe('pr', { concurrency: 4 }, () => {
     assert.match(result.stdout, /is in review but its CI failed; labelled needs-human/);
   });
 
-  test('an approved PR whose CI goes red goes back to a reviewer and merges once green', async () => {
+  test('an approved PR whose CI goes red goes back to a reviewer that only fixes CI, and merges once green', async () => {
     const f = fixture([epic('E1'), task('E1.1', 'E1')]);
     const result = await f.run({ FIXTURE_REVIEW_RED: '1' });
     assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -488,6 +488,8 @@ describe('pr', { concurrency: 4 }, () => {
     assert.ok(!f.issue('E1.1').labels.includes('needs-human'));
     assert.equal(f.issue('E1.1').status, 'closed');
     assert.equal(f.read('agents').filter(line => /^claude E1\.1 .*--model opus/.test(line)).length, 2);
+    // Only the second reviewer is told to fix the red checks and skip the review.
+    assert.equal(f.read('prompts').filter(line => line.startsWith('Retry: this PR was already reviewed')).length, 1);
   });
 
   test('a reviewer stopped by a second Ctrl+C after its fix turned CI red gets the PR again after a restart', async () => {

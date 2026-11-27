@@ -432,13 +432,16 @@ async function freshTree(name) {
 }
 const prFacts = pr => [`PR: #${pr.number}`, `Task: ${pr.task.id}`, `Title: ${pr.task.title}`, `Branch: ${pr.headRefName}`, `Base: ${base}`];
 async function startReview(pr, row) {
+  // Red CI on a reviewed PR comes from a reviewer's fix or the merger's merge, after the review was posted.
+  const ciOnly = reviewed.has(pr.number) && !passed(pr);
   reviewed.add(pr.number);
   saveReviewed();
   let n = 1; // the first reviewer worktree no running reviewer uses
   while ([...running].some(job => job.cwd === join(trees, `reviewer-${n}`))) n++;
   const path = await freshTree(`reviewer-${n}`);
   if (stopping) return; // q came during the git calls: no new agent
-  launch(row, 'reviewer', `review-${pr.number}`, path, prFacts(pr));
+  const retry = 'Retry: this PR was already reviewed and its CI is red. Do not review it again: skip steps 2 and 3, fix only the red checks as in step 4, then approve.';
+  launch(row, 'reviewer', `review-${pr.number}`, path, ciOnly ? [...prFacts(pr), retry] : prFacts(pr));
 }
 async function startMerger(pr) {
   const row = await pick(mergerStage);

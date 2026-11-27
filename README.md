@@ -266,7 +266,8 @@ tasks, counting the tasks those block in turn; the oldest PR on a tie.
   both sides' task descriptions (`prompts/pr-merger.md`), runs the tests for
   the conflicted code, pushes and ends. The PR merges once its CI passes.
 - An approved PR whose CI goes red (after a reviewer's fix or the merger's
-  merge) loses `approved` and goes back to a reviewer. After `tries` times (default 3) the task
+  merge) loses `approved` and goes back to a reviewer, which only fixes the
+  red checks and approves, without reviewing again. After `tries` times (default 3) the task
   gets `needs-human`.
 
 - At start, the local default branch is pushed to `origin` so workers branch
